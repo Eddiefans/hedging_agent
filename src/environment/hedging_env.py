@@ -7,8 +7,8 @@ class PortfolioHedgingEnv(gym.Env):
     Gym environment for a portfolio hedging agent:
     - Agent manages hedging for a portfolio of a single stock (NVIDIA)
     - Output is continuous between 0 and 2, where 1 is neutral
-    - Values below 1 indicate short selling (e.g., 0.9 = short 10%)
-    - Values above 1 indicate buying more (e.g., 1.1 = buy 10% more)
+    - Values below 1 indicate buying more (e.g., 0.9 = buy 10%)
+    - Values above 1 indicate short selling (e.g., 1.1 = sell 10% more)
     - Dead zone of ±10% around 1.0 (0.91-1.09) results in no action
     - Each episode randomly selects a 6-month period from the dataset
     - Rewards based on hedging performance over the episode period
@@ -98,11 +98,13 @@ class PortfolioHedgingEnv(gym.Env):
             raise ValueError("Episode is done, call reset()")
         
         # Clamp action to valid range
-        target_position = np.clip(action[0], 0.0, 2.0)
+        target_action_value = np.clip(action[0], 0.0, 2.0)
         
         # Apply dead zone
-        if abs(target_position - 1.0) <= self.dead_zone:
+        if abs(target_action_value - 1.0) <= self.dead_zone:
             target_position = self.current_position  # No change
+        else:
+            target_position = 2.0 - target_action_value
         
         # Clamp to position limits
         target_position = np.clip(target_position, self.min_position, self.max_position)

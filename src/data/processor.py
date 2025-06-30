@@ -192,30 +192,23 @@ def create_hedging_features_dataset(
         close=df["Close"],
         window=atr_window,
     )
-    df["ATR"] = atr.average_true_range()
-    df["ATR_normalized"] = df["ATR"] / df["Close"]  # Normalize by price
+    df["ATR_normalized"] = atr.average_true_range() / df["Close"]  # Normalize by price
     
-    # Volume indicators
-    df["OBV"] = ta.volume.on_balance_volume(df["Close"], df["Volume"])
-    df["VWAP"] = ta.volume.volume_weighted_average_price(
-        df["High"], df["Low"], df["Close"], df["Volume"]
-    )
-    df["price_vwap_ratio"] = df["Close"] / df["VWAP"]
+    # Volume indicator
+    df["price_vwap_ratio"] = df["Close"] / ta.volume.volume_weighted_average_price(df["High"], df["Low"], df["Close"], df["Volume"])
     
     # Volume moving averages
     for window in volume_windows:
-        df[f"volume_sma_{window}"] = df["Volume"].rolling(window=window).mean()
-        df[f"volume_ratio_{window}"] = df["Volume"] / df[f"volume_sma_{window}"]
+        volume_sma = df["Volume"].rolling(window=window).mean()
+        df[f"volume_ratio_{window}"] = df["Volume"] / volume_sma
 
     # Momentum indicators
     for window in momentum_windows:
         df[f"momentum_{window}"] = df["Close"] / df["Close"].shift(window) - 1
-        df[f"roc_{window}"] = ta.momentum.roc(df["Close"], window=window)
 
     # Volatility features (important for hedging)
     for window in volatility_windows:
-        df[f"volatility_{window}"] = df["returns"].rolling(window=window).std()
-        df[f"volatility_{window}_normalized"] = df[f"volatility_{window}"] * np.sqrt(252)  # Annualized
+        df[f"volatility_{window}_normalized"] = df["returns"].rolling(window=window).std() * np.sqrt(252)  # Annualized
     
     # High-Low spreads and ranges
     df["high_low_spread"] = (df["High"] - df["Low"]) / df["Close"]
@@ -273,7 +266,7 @@ def create_hedging_features_dataset(
     # Drop other intermediate calculations
     columns_to_drop.extend([
         "BB_upper", "BB_lower", "BB_middle", "VWAP", "OBV",
-        "VIX_sma_20", "SPY"
+        "VIX_sma_20", "SPY", "VIX", "SPY_returns"
     ])
     
     # Clean up volume SMAs

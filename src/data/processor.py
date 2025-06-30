@@ -23,6 +23,7 @@ def download_raw_data(ticker, start_date, end_date, output_path=None, verbose=Tr
     
     # Download data from Yahoo Finance
     raw = yf.download(ticker, start=start_date, end=end_date, threads=False)
+    raw.columns = raw.columns.droplevel(1)  # Remove multi-index if present
     
     # Save if there is an output path
     if output_path:
@@ -35,7 +36,7 @@ def download_raw_data(ticker, start_date, end_date, output_path=None, verbose=Tr
 
 def create_hedging_features_dataset(
     ticker,
-    lags=10,
+    lags=50,
     start_date="2015-01-01",
     end_date="2024-12-31",
     output_path=None,
@@ -138,19 +139,26 @@ def create_hedging_features_dataset(
     df["returns"] = df["Close"].pct_change()
     df["log_returns"] = np.log(df["Close"] / df["Close"].shift(1))
     
-    # Lagged returns for momentum/mean reversion signals
+    # Calculate all lagged returns in a dictionary first
+    lag_features = {}
     for lag in range(1, lags + 1):
-        df[f"returns_lag_{lag}"] = df["returns"].shift(lag)
-        df[f"log_returns_lag_{lag}"] = df["log_returns"].shift(lag)
+        # lag_features[f"returns_lag_{lag}"] = df["returns"].shift(lag)  Just using log returns for now
+        lag_features[f"log_returns_lag_{lag}"] = df["log_returns"].shift(lag)
+
+    # Create DataFrame from dictionary and combine with main df
+    lag_df = pd.DataFrame(lag_features, index=df.index)
+    df = pd.concat([df, lag_df], axis=1)
+
+    df.dropna(inplace=True)  # Drop NaNs created by shifts
 
     # Multiple timeframe moving averages
     for window in sma_windows:
-        df[f"SMA_{window}"] = ta.trend.sma_indicator(df["Close"], window=window)
-        df[f"price_sma_{window}_ratio"] = df["Close"] / df[f"SMA_{window}"]
+        SMA = ta.trend.sma_indicator(df["Close"], window=window) # Not using the SMA price as feature
+        df[f"price_sma_{window}_ratio"] = df["Close"] / SMA # Using the ratio instead
         
     for window in ema_windows:
-        df[f"EMA_{window}"] = ta.trend.ema_indicator(df["Close"], window=window)
-        df[f"price_ema_{window}_ratio"] = df["Close"] / df[f"EMA_{window}"]
+        EMA = ta.trend.ema_indicator(df["Close"], window=window)
+        df[f"price_ema_{window}_ratio"] = df["Close"] / EMA
 
     # RSI for overbought/oversold conditions
     df["RSI"] = ta.momentum.rsi(df["Close"], window=rsi_window)
@@ -166,17 +174,16 @@ def create_hedging_features_dataset(
     df["MACD"] = macd.macd()
     df["MACD_signal"] = macd.macd_signal()
     df["MACD_histogram"] = macd.macd_diff()
-    df["MACD_signal_strength"] = df["MACD"] - df["MACD_signal"]
     
     # Bollinger Bands for volatility and mean reversion
     bb = ta.volatility.BollingerBands(
         df["Close"], window=bb_window, window_dev=bb_std
     )
-    df["BB_upper"] = bb.bollinger_hband()
-    df["BB_lower"] = bb.bollinger_lband()
-    df["BB_middle"] = bb.bollinger_mavg()
-    df["BB_position"] = (df["Close"] - df["BB_lower"]) / (df["BB_upper"] - df["BB_lower"])
-    df["BB_width"] = (df["BB_upper"] - df["BB_lower"]) / df["BB_middle"]
+    # df["BB_upper"] = bb.bollinger_hband() not using the bands directly, since is correlated to close price
+    # df["BB_lower"] = bb.bollinger_lband()
+    # df["BB_middle"] = bb.bollinger_mavg()
+    df["BB_position"] = (df["Close"] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband())
+    df["BB_width"] = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
 
     # ATR for volatility
     atr = ta.volatility.AverageTrueRange(
@@ -312,7 +319,7 @@ if __name__ == "__main__":
     processed_path = "data/processed/{}_hedging_features.csv".format(ticker)
     
     # Download raw data
-    raw_data = download_raw_data(ticker, start_date, end_date, raw_path)
+    raw_data = download_raw_data(ticker, start_date, end_date, raw_path, verbose=False)
     
     # Process data and create hedging features
     features_df = create_hedging_features_dataset(
@@ -320,7 +327,8 @@ if __name__ == "__main__":
         start_date=start_date,
         end_date=end_date,
         output_path=processed_path,
-        raw_data_path=raw_path
+        raw_data_path=raw_path,
+        verbose=False
     )
     
     print("\n=== Dataset Summary ===")

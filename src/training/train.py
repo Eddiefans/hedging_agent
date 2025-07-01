@@ -11,7 +11,7 @@ from stable_baselines3.common.noise import NormalActionNoise
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_root)
 
-# Import the hedging environment
+# Import the NEW hedging environment
 from src.environment.hedging_env import PortfolioHedgingEnv
 
 def train_hedging_model(
@@ -20,17 +20,19 @@ def train_hedging_model(
     checkpoints_dir="checkpoints",
     best_model_dir="models/best_model",
     eval_log_dir="logs/evaluation",
-    total_timesteps=1_000_000,
+    total_timesteps=10_000_000,
     episode_length_months=6,
     window_size=5,
-    dead_zone=0.09,
-    portfolio_value=1_000_000,
+    dead_zone=0.05,  # 5% dead zone
+    initial_portfolio=1_000_000,
+    reserve_cash_pct=0.15,  # 15% reserve cash
     commission=0.00125,
-    algorithm="PPO",  # or "SAC" for continuous control
+    max_position_change_penalty=0.20,  # 20% position change penalty threshold
+    algorithm="SAC",  # or "PPO" for policy gradient
     verbose=True
 ):
     """
-    Train a reinforcement learning agent for portfolio hedging.
+    Train a reinforcement learning agent for portfolio hedging using the environment.
     
     Args:
         data_path: Path to the processed dataset
@@ -41,9 +43,11 @@ def train_hedging_model(
         total_timesteps: Total number of timesteps to train for
         episode_length_months: Length of each episode in months
         window_size: Observation window size
-        dead_zone: Dead zone around 1.0 for no-action
-        portfolio_value: Initial portfolio value
+        dead_zone: Dead zone around 1.0 for no-action (5%)
+        initial_portfolio: Initial portfolio value
+        reserve_cash_pct: Percentage of portfolio to keep as cash reserve (15%)
         commission: Commission rate for trades
+        max_position_change_penalty: Threshold for position change penalty (20%)
         algorithm: RL algorithm to use ("PPO" or "SAC")
         verbose: Whether to print progress messages
     
@@ -77,8 +81,10 @@ def train_hedging_model(
         print(f"Features shape: {features.shape}")
         print(f"Price data points: {len(prices)}")
         print(f"Date range: {dates[0]} to {dates[-1]}")
+        print(f"Reserve cash: {reserve_cash_pct*100}%")
+        print(f"Dead zone: ±{dead_zone*100}%")
     
-    # Create environments
+    # Create environments using the NEW environment
     train_env = PortfolioHedgingEnv(
         features=features,
         prices=prices,
@@ -86,8 +92,10 @@ def train_hedging_model(
         episode_length_months=episode_length_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        portfolio_value=portfolio_value,
-        commission=commission
+        initial_portfolio=initial_portfolio,
+        reserve_cash_pct=reserve_cash_pct,
+        commission=commission,
+        max_position_change_penalty=max_position_change_penalty
     )
     
     eval_env = PortfolioHedgingEnv(
@@ -97,8 +105,10 @@ def train_hedging_model(
         episode_length_months=episode_length_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        portfolio_value=portfolio_value,
-        commission=commission
+        initial_portfolio=initial_portfolio,
+        reserve_cash_pct=reserve_cash_pct,
+        commission=commission,
+        max_position_change_penalty=max_position_change_penalty
     )
     
     # Configure logging
@@ -180,8 +190,8 @@ def train_hedging_model(
     if verbose:
         print(f"Training {algorithm} for {total_timesteps} timesteps...")
         print(f"Episode length: {episode_length_months} months")
-        print(f"Portfolio value: ${portfolio_value:,}")
-        print(f"Dead zone: ±{dead_zone*100:.1f}%")
+        print(f"Portfolio value: ${initial_portfolio:,}")
+        print(f"Action space: [0.0 = max long, 1.0 = neutral, 2.0 = max short]")
     
     model.learn(
         total_timesteps=total_timesteps,
@@ -197,10 +207,12 @@ def train_hedging_model(
     
     return model
 
-def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose=True):
+def quick_test_environment(data_path="data/processed/NVDA_hedging_features.csv"):
     """
-    Evaluate a trained model on sample episodes and print statistics.
+    Quick test to make sure the environment works correctly.
     """
+    print("Testing PortfolioHedgingEnv...")
+    
     # Load data
     df = pd.read_csv(data_path)
     df['Date'] = pd.to_datetime(df['Date'])
@@ -214,49 +226,32 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         features=features,
         prices=prices,
         dates=dates,
-        episode_length_months=6,
+        episode_length_months=1,  # Short episode for testing
         window_size=5
     )
     
-    # Load model
-    if "sac" in model_path.lower():
-        model = SAC.load(model_path)
-    else:
-        model = PPO.load(model_path)
+    # Test a few steps
+    obs = env.reset()
+    print(f"Initial observation shape: {obs.shape}")
+    print(f"Initial portfolio value: ${env._calculate_portfolio_value():,.2f}")
     
-    # Run episodes
-    episode_stats = []
-    for episode in range(n_episodes):
-        obs = env.reset()
-        done = False
-        step_count = 0
-        
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
-            step_count += 1
-        
-        stats = env.get_episode_stats()
-        stats['episode'] = episode
-        stats['steps'] = step_count
-        episode_stats.append(stats)
-        
-        if verbose:
-            print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
-                  f"Sharpe={stats['sharpe_ratio']:.3f}, "
-                  f"Max DD={stats['max_drawdown']*100:.2f}%, "
-                  f"Final Pos={stats['final_position']:.3f}")
+    # Test different actions
+    test_actions = [0.5, 1.0, 1.5, 0.95, 1.05]  # Long, neutral, short, dead zone
     
-    # Summary statistics
-    stats_df = pd.DataFrame(episode_stats)
-    if verbose:
-        print("\n=== Summary Statistics ===")
-        print(f"Average Return: {stats_df['total_return'].mean()*100:.2f}% ± {stats_df['total_return'].std()*100:.2f}%")
-        print(f"Average Sharpe Ratio: {stats_df['sharpe_ratio'].mean():.3f} ± {stats_df['sharpe_ratio'].std():.3f}")
-        print(f"Average Max Drawdown: {stats_df['max_drawdown'].mean()*100:.2f}% ± {stats_df['max_drawdown'].std()*100:.2f}%")
-        print(f"Win Rate: {(stats_df['total_return'] > 0).mean()*100:.1f}%")
+    for i, action in enumerate(test_actions):
+        if env.episode_done:
+            obs = env.reset()
+        
+        obs, reward, done, info = env.step([action])
+        print(f"Step {i+1}: Action={action:.2f}, Reward={reward:.4f}, "
+              f"Portfolio=${info['portfolio_value']:,.2f}, Cash=${info['cash']:,.2f}")
+        
+        if done:
+            stats = env.get_episode_stats()
+            print(f"Episode finished. Total return: {stats['total_return']*100:.2f}%")
+            break
     
-    return stats_df
+    print("Environment test completed successfully!")
 
 if __name__ == "__main__":
     import argparse
@@ -270,16 +265,14 @@ if __name__ == "__main__":
                        help='Total training timesteps')
     parser.add_argument('--episode_months', type=int, default=6,
                        help='Episode length in months')
-    parser.add_argument('--evaluate', action='store_true',
-                       help='Evaluate existing model instead of training')
-    parser.add_argument('--model_path', default="models/best_model/best_model",
-                       help='Path to model for evaluation')
+    parser.add_argument('--test', action='store_true',
+                       help='Run environment test instead of training')
     
     args = parser.parse_args()
     
-    if args.evaluate:
-        print("Evaluating model...")
-        evaluate_model_sample_episodes(args.model_path, args.data_path)
+    if args.test:
+        print("Running environment test...")
+        quick_test_environment(args.data_path)
     else:
         print("Training model...")
         trained_model = train_hedging_model(

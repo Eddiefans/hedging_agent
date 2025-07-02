@@ -2,7 +2,7 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-from stable_baselines3 import SAC, DDPG
+from stable_baselines3 import DDPG, PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.noise import NormalActionNoise
@@ -24,9 +24,9 @@ def train_hedging_model(
     episode_length_months=6,
     window_size=5,
     dead_zone=0.09,
-    portfolio_value=1_000_000,
+    # portfolio_value=1_000_000, # Este parámetro no se usa en el __init__ del entorno
     commission=0.00125,
-    algorithm="DDPG",  # or "SAC" for continuous control
+    algorithm="DDPG",
     verbose=True
 ):
     """
@@ -42,9 +42,10 @@ def train_hedging_model(
         episode_length_months: Length of each episode in months
         window_size: Observation window size
         dead_zone: Dead zone around 1.0 for no-action
-        portfolio_value: Initial portfolio value
+        # portfolio_value: Initial portfolio value (Removed as it's not accepted by Env __init__)
         commission: Commission rate for trades
-        algorithm: RL algorithm to use ("DDPG" or "SAC")
+        # MODIFICADO: RL algorithm to use ("DDPG" or "PPO")
+        algorithm: RL algorithm to use ("DDPG" or "PPO")
         verbose: Whether to print progress messages
     
     Returns:
@@ -86,7 +87,6 @@ def train_hedging_model(
         episode_length_months=episode_length_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        portfolio_value=portfolio_value,
         commission=commission
     )
     
@@ -97,7 +97,6 @@ def train_hedging_model(
         episode_length_months=episode_length_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        portfolio_value=portfolio_value,
         commission=commission
     )
     
@@ -105,36 +104,7 @@ def train_hedging_model(
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
     
     # Create model based on algorithm choice
-    if algorithm.upper() == "SAC":
-        # SAC is better for continuous control
-        if verbose:
-            print("Using SAC (Soft Actor-Critic) for continuous hedging control...")
-        
-        # Add action noise for exploration
-        n_actions = train_env.action_space.shape[-1]
-        action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
-        
-        model = SAC(
-            "MlpPolicy",
-            train_env,
-            action_noise=action_noise,
-            verbose=1,
-            tensorboard_log=log_dir,
-            learning_rate=3e-4,
-            buffer_size=100000,
-            learning_starts=1000,
-            batch_size=256,
-            tau=0.005,
-            gamma=0.99,
-            train_freq=1,
-            gradient_steps=1,
-            ent_coef='auto',
-            target_update_interval=1,
-            target_entropy='auto'
-        )
-        model_prefix = "sac_hedging"
-        
-    else:  # DDPG
+    if algorithm.upper() == "DDPG": 
         if verbose:
             print("Using DDPG (Deep Deterministic Policy Gradient) for hedging...")
         
@@ -157,6 +127,25 @@ def train_hedging_model(
             gradient_steps=1
         )
         model_prefix = "DDPG_hedging"
+        
+    else:
+        if verbose:
+            print("Using PPO (Proximal Policy Optimization) for hedging...")
+     
+        model = PPO(
+            "MlpPolicy",
+            train_env,
+            verbose=1,
+            tensorboard_log=log_dir,
+            learning_rate=3e-4,
+            n_steps=2048, 
+            batch_size=64, 
+            gamma=0.99,
+            gae_lambda=0.95,
+            ent_coef=0.01, 
+            clip_range=0.2, 
+        )
+        model_prefix = "PPO_hedging"
     
     model.set_logger(new_logger)
     
@@ -181,7 +170,6 @@ def train_hedging_model(
     if verbose:
         print(f"Training {algorithm} for {total_timesteps} timesteps...")
         print(f"Episode length: {episode_length_months} months")
-        print(f"Portfolio value: ${portfolio_value:,}")
         print(f"Dead zone: ±{dead_zone*100:.1f}%")
     
     model.learn(
@@ -217,24 +205,27 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         dates=dates,
         episode_length_months=6,
         window_size=5
+        # The default dead_zone and commission will be used here.
+        # If you want to specify them, you'd add them as arguments to this function.
     )
     
     # Load model
-    if "sac" in model_path.lower():
-        model = SAC.load(model_path)
-    else:
+    if "ppo" in model_path.lower():
+        model = PPO.load(model_path)
+    else: 
         model = DDPG.load(model_path)
     
     # Run episodes
     episode_stats = []
     for episode in range(n_episodes):
-        obs = env.reset()
-        done = False
+        obs, _ = env.reset() 
+        terminated = False 
+        truncated = False
         step_count = 0
         
-        while not done:
+        while not (terminated or truncated): 
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
             step_count += 1
         
         stats = env.get_episode_stats()
@@ -246,7 +237,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
             print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
                   f"Sharpe={stats['sharpe_ratio']:.3f}, "
                   f"Max DD={stats['max_drawdown']*100:.2f}%, "
-                  f"Final Pos={stats['final_position']:.3f}")
+                  f"Final Portfolio Value=${stats['final_portfolio_value']:,.2f}")
     
     # Summary statistics
     stats_df = pd.DataFrame(episode_stats)
@@ -264,17 +255,17 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Train portfolio hedging model')
     parser.add_argument('--data_path', default="data/processed/NVDA_hedging_features.csv",
-                       help='Path to processed dataset')
-    parser.add_argument('--algorithm', choices=['DDPG', 'SAC'], default='SAC',
-                       help='RL algorithm to use')
+                        help='Path to processed dataset')
+    parser.add_argument('--algorithm', choices=['DDPG', 'PPO'], default='DDPG',
+                        help='RL algorithm to use')
     parser.add_argument('--timesteps', type=int, default=1_000_000,
-                       help='Total training timesteps')
+                        help='Total training timesteps')
     parser.add_argument('--episode_months', type=int, default=6,
-                       help='Episode length in months')
+                        help='Episode length in months')
     parser.add_argument('--evaluate', action='store_true',
-                       help='Evaluate existing model instead of training')
+                        help='Evaluate existing model instead of training')
     parser.add_argument('--model_path', default="models/best_model/best_model",
-                       help='Path to model for evaluation')
+                        help='Path to model for evaluation')
     
     args = parser.parse_args()
     

@@ -2,7 +2,7 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import SAC, DDPG
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.noise import NormalActionNoise
@@ -26,7 +26,7 @@ def train_hedging_model(
     dead_zone=0.09,
     portfolio_value=1_000_000,
     commission=0.00125,
-    algorithm="PPO",  # or "SAC" for continuous control
+    algorithm="DDPG",  # or "SAC" for continuous control
     verbose=True
 ):
     """
@@ -44,7 +44,7 @@ def train_hedging_model(
         dead_zone: Dead zone around 1.0 for no-action
         portfolio_value: Initial portfolio value
         commission: Commission rate for trades
-        algorithm: RL algorithm to use ("PPO" or "SAC")
+        algorithm: RL algorithm to use ("DDPG" or "SAC")
         verbose: Whether to print progress messages
     
     Returns:
@@ -134,28 +134,29 @@ def train_hedging_model(
         )
         model_prefix = "sac_hedging"
         
-    else:  # PPO
+    else:  # DDPG
         if verbose:
-            print("Using PPO (Proximal Policy Optimization) for hedging...")
+            print("Using DDPG (Deep Deterministic Policy Gradient) for hedging...")
         
-        model = PPO(
+        n_actions = train_env.action_space.shape[-1]
+        action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
+
+        model = DDPG (
             "MlpPolicy",
             train_env,
+            action_noise=action_noise,
             verbose=1,
             tensorboard_log=log_dir,
             learning_rate=3e-4,
-            n_steps=2048,
-            batch_size=64,
-            n_epochs=10,
+            buffer_size=100000,
+            learning_starts=1000,
+            batch_size=256,
+            tau=0.005,
             gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=0.2,
-            clip_range_vf=None,
-            ent_coef=0.0,
-            vf_coef=0.5,
-            max_grad_norm=0.5
+            train_freq=1,
+            gradient_steps=1
         )
-        model_prefix = "ppo_hedging"
+        model_prefix = "DDPG_hedging"
     
     model.set_logger(new_logger)
     
@@ -222,7 +223,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
     if "sac" in model_path.lower():
         model = SAC.load(model_path)
     else:
-        model = PPO.load(model_path)
+        model = DDPG.load(model_path)
     
     # Run episodes
     episode_stats = []
@@ -264,7 +265,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train portfolio hedging model')
     parser.add_argument('--data_path', default="data/processed/NVDA_hedging_features.csv",
                        help='Path to processed dataset')
-    parser.add_argument('--algorithm', choices=['PPO', 'SAC'], default='SAC',
+    parser.add_argument('--algorithm', choices=['DDPG', 'SAC'], default='SAC',
                        help='RL algorithm to use')
     parser.add_argument('--timesteps', type=int, default=1_000_000,
                        help='Total training timesteps')

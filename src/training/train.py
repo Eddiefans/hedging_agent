@@ -2,10 +2,10 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-from stable_baselines3 import DDPG, PPO
+from stable_baselines3 import PPO, DDPG # <-- CAMBIO: Importar DDPG
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
-from stable_baselines3.common.noise import NormalActionNoise
+from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise # <-- CAMBIO: Importar OrnsteinUhlenbeckActionNoise
 
 # Add the project root directory to the system path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -20,13 +20,17 @@ def train_hedging_model(
     checkpoints_dir="checkpoints",
     best_model_dir="models/best_model",
     eval_log_dir="logs/evaluation",
-    total_timesteps=1_000_000,
+    total_timesteps=5_000_000,
     episode_length_months=6,
     window_size=5,
-    dead_zone=0.09,
-    # portfolio_value=1_000_000, # Este parámetro no se usa en el __init__ del entorno
+    dead_zone=0.005, # <-- Usar el nuevo dead_zone de 0.01
+    initial_portfolio_value=2_000_000, # <-- Usar el nuevo portfolio_value de 2M
+    initial_long_capital=1_000_000,   # <-- 1M para largos
+    initial_short_capital=1_000_000,  # <-- 1M para cortos
     commission=0.00125,
-    algorithm="DDPG",
+    max_shares_per_trade=1.0, # Nuevo parámetro del entorno
+    action_change_penalty_threshold=0.1, # Nuevo parámetro del entorno
+    algorithm="DDPG", # <-- CAMBIO: Default a DDPG
     verbose=True
 ):
     """
@@ -42,10 +46,13 @@ def train_hedging_model(
         episode_length_months: Length of each episode in months
         window_size: Observation window size
         dead_zone: Dead zone around 1.0 for no-action
-        # portfolio_value: Initial portfolio value (Removed as it's not accepted by Env __init__)
+        initial_portfolio_value: Initial portfolio value (2M)
+        initial_long_capital: Initial capital for long positions (1M)
+        initial_short_capital: Initial capital for short positions (1M)
         commission: Commission rate for trades
-        # MODIFICADO: RL algorithm to use ("DDPG" or "PPO")
-        algorithm: RL algorithm to use ("DDPG" or "PPO")
+        max_shares_per_trade: Max percentage of portfolio value to trade in one step
+        action_change_penalty_threshold: Threshold for penalizing large action changes
+        algorithm: RL algorithm to use ("PPO", "SAC" or "DDPG")
         verbose: Whether to print progress messages
     
     Returns:
@@ -80,6 +87,7 @@ def train_hedging_model(
         print(f"Date range: {dates[0]} to {dates[-1]}")
     
     # Create environments
+    # -- Pasar los nuevos parámetros al entorno ---
     train_env = PortfolioHedgingEnv(
         features=features,
         prices=prices,
@@ -87,7 +95,12 @@ def train_hedging_model(
         episode_length_months=episode_length_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        commission=commission
+        initial_portfolio_value=initial_portfolio_value,
+        initial_long_capital=initial_long_capital,
+        initial_short_capital=initial_short_capital,
+        commission=commission,
+        max_shares_per_trade=max_shares_per_trade,
+        action_change_penalty_threshold=action_change_penalty_threshold
     )
     
     eval_env = PortfolioHedgingEnv(
@@ -97,55 +110,68 @@ def train_hedging_model(
         episode_length_months=episode_length_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        commission=commission
+        initial_portfolio_value=initial_portfolio_value,
+        initial_long_capital=initial_long_capital,
+        initial_short_capital=initial_short_capital,
+        commission=commission,
+        max_shares_per_trade=max_shares_per_trade,
+        action_change_penalty_threshold=action_change_penalty_threshold
     )
     
     # Configure logging
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
     
     # Create model based on algorithm choice
-    if algorithm.upper() == "DDPG": 
+    if algorithm.upper() == "DDPG": # Lógica para DDPG
         if verbose:
-            print("Using DDPG (Deep Deterministic Policy Gradient) for hedging...")
+            print("Using DDPG (Deep Deterministic Policy Gradient) for continuous hedging control...")
         
+        # DDPG typically uses Ornstein-Uhlenbeck noise for exploration
         n_actions = train_env.action_space.shape[-1]
-        action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
-
-        model = DDPG (
+        action_noise = OrnsteinUhlenbeckActionNoise(mean=np.zeros(n_actions), sigma=0.3 * np.ones(n_actions))
+        
+        model = DDPG( # <-- CAMBIO: Usar DDPG
             "MlpPolicy",
             train_env,
             action_noise=action_noise,
             verbose=1,
             tensorboard_log=log_dir,
-            learning_rate=3e-4,
+            learning_rate=1e-4, # DDPG often benefits from smaller learning rates
             buffer_size=100000,
             learning_starts=1000,
-            batch_size=256,
+            batch_size=128, # Smaller batch size than SAC sometimes
             tau=0.005,
             gamma=0.99,
-            train_freq=1,
-            gradient_steps=1
+            train_freq=(1, "episode"), # DDPG often updates per episode
+            gradient_steps=-1, # -1 means update until buffer is empty for SAC/DDPG after each step
+            # DDPG specific parameters (these might need fine-tuning)
+            optimize_memory_usage=False, # True can be slow for large buffer_size
+            policy_kwargs=dict(net_arch=dict(pi=[400, 300], qf=[400, 300])) # Common DDPG network architecture
         )
-        model_prefix = "DDPG_hedging"
+        model_prefix = "ddpg_hedging"
         
-    else:
+    else: # PPO
         if verbose:
             print("Using PPO (Proximal Policy Optimization) for hedging...")
-     
+        
         model = PPO(
             "MlpPolicy",
             train_env,
             verbose=1,
             tensorboard_log=log_dir,
             learning_rate=3e-4,
-            n_steps=2048, 
-            batch_size=64, 
+            n_steps=2048,
+            batch_size=64,
+            n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
-            ent_coef=0.01, 
-            clip_range=0.2, 
+            clip_range=0.2,
+            clip_range_vf=None,
+            ent_coef=0.0,
+            vf_coef=0.5,
+            max_grad_norm=0.5
         )
-        model_prefix = "PPO_hedging"
+        model_prefix = "ppo_hedging"
     
     model.set_logger(new_logger)
     
@@ -170,7 +196,9 @@ def train_hedging_model(
     if verbose:
         print(f"Training {algorithm} for {total_timesteps} timesteps...")
         print(f"Episode length: {episode_length_months} months")
+        print(f"Portfolio value: ${initial_portfolio_value:,}") # <-- Usar initial_portfolio_value
         print(f"Dead zone: ±{dead_zone*100:.1f}%")
+        print(f"Action change penalty threshold: {action_change_penalty_threshold:.2f}")
     
     model.learn(
         total_timesteps=total_timesteps,
@@ -199,35 +227,43 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
     features = df[feature_columns].astype(np.float32).values
     
     # Create environment
+    # --- CAMBIO: Asegurarse de que los parámetros del entorno de evaluación coincidan ---
     env = PortfolioHedgingEnv(
         features=features,
         prices=prices,
         dates=dates,
         episode_length_months=6,
-        window_size=5
-        # The default dead_zone and commission will be used here.
-        # If you want to specify them, you'd add them as arguments to this function.
+        window_size=5,
+        dead_zone=0.005,
+        initial_portfolio_value=2_000_000,
+        initial_long_capital=1_000_000,
+        initial_short_capital=1_000_000,
+        commission=0.00125,
+        max_shares_per_trade=1.0,
+        action_change_penalty_threshold=0.1
     )
     
     # Load model
-    if "ppo" in model_path.lower():
-        model = PPO.load(model_path)
-    else: 
+    if "ddpg" in model_path.lower(): # Cargar DDPG
         model = DDPG.load(model_path)
+    else:
+        model = PPO.load(model_path)
     
     # Run episodes
     episode_stats = []
     for episode in range(n_episodes):
-        obs, _ = env.reset() 
-        terminated = False 
-        truncated = False
+        obs, info = env.reset()
+        done = False
         step_count = 0
         
-        while not (terminated or truncated): 
+        while not done:
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action) 
+            done = terminated or truncated
             step_count += 1
         
+        print(f"    Reward this step: {reward:.5f}")
+
         stats = env.get_episode_stats()
         stats['episode'] = episode
         stats['steps'] = step_count
@@ -237,7 +273,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
             print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
                   f"Sharpe={stats['sharpe_ratio']:.3f}, "
                   f"Max DD={stats['max_drawdown']*100:.2f}%, "
-                  f"Final Portfolio Value=${stats['final_portfolio_value']:,.2f}")
+                  f"Final Pos Net Shares={stats['final_position_net_shares']:.2f}")
     
     # Summary statistics
     stats_df = pd.DataFrame(episode_stats)
@@ -256,15 +292,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train portfolio hedging model')
     parser.add_argument('--data_path', default="data/processed/NVDA_hedging_features.csv",
                         help='Path to processed dataset')
-    parser.add_argument('--algorithm', choices=['DDPG', 'PPO'], default='DDPG',
+    parser.add_argument('--algorithm', choices=['PPO', 'DDPG'], default='DDPG',
                         help='RL algorithm to use')
-    parser.add_argument('--timesteps', type=int, default=1_000_000,
+    parser.add_argument('--timesteps', type=int, default=5_000_000,
                         help='Total training timesteps')
     parser.add_argument('--episode_months', type=int, default=6,
                         help='Episode length in months')
     parser.add_argument('--evaluate', action='store_true',
                         help='Evaluate existing model instead of training')
-    parser.add_argument('--model_path', default="models/best_model/best_model",
+    parser.add_argument('--model_path', default="models/best_model/ddpg_hedging_best_model",
                         help='Path to model for evaluation')
     
     args = parser.parse_args()

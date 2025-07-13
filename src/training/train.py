@@ -2,17 +2,19 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-from stable_baselines3 import PPO, DDPG # <-- CAMBIO: Importar DDPG
+from stable_baselines3 import PPO, DDPG
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
-from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise # <-- CAMBIO: Importar OrnsteinUhlenbeckActionNoise
+from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
+from stable_baselines3.common.env_util import make_vec_env  # CAMBIO: Para vectorización
+from stable_baselines3.common.preprocessing import preprocess_obs  # CAMBIO: Para normalización
 
 # Add the project root directory to the system path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_root)
 
 # Import the hedging environment
-from src.environment.hedging_env import PortfolioHedgingEnv
+from src.environment.hedging_env import PortfolioHedgingEnv  # Asegúrate de que esta ruta apunte al entorno actualizado
 
 def train_hedging_model(
     data_path="data/processed/NVDA_hedging_features.csv",
@@ -23,14 +25,15 @@ def train_hedging_model(
     total_timesteps=5_000_000,
     episode_length_months=6,
     window_size=5,
-    dead_zone=0.005, # <-- Usar el nuevo dead_zone de 0.01
-    initial_portfolio_value=2_000_000, # <-- Usar el nuevo portfolio_value de 2M
-    initial_long_capital=1_000_000,   # <-- 1M para largos
-    initial_short_capital=1_000_000,  # <-- 1M para cortos
+    dead_zone=0.005,
+    initial_portfolio_value=2_000_000,
+    initial_long_capital=1_000_000,
+    initial_short_capital=1_000_000,
     commission=0.00125,
-    max_shares_per_trade=1.0, # Nuevo parámetro del entorno
-    action_change_penalty_threshold=0.1, # Nuevo parámetro del entorno
-    algorithm="DDPG", # <-- CAMBIO: Default a DDPG
+    max_shares_per_trade=1.0,
+    action_change_penalty_threshold=0.1,
+    algorithm="DDPG",
+    n_envs=4,  # CAMBIO: Número de entornos paralelos para vectorización
     verbose=True
 ):
     """
@@ -45,14 +48,15 @@ def train_hedging_model(
         total_timesteps: Total number of timesteps to train for
         episode_length_months: Length of each episode in months
         window_size: Observation window size
-        dead_zone: Dead zone around 1.0 for no-action
+        dead_zone: Dead zone around action changes
         initial_portfolio_value: Initial portfolio value (2M)
         initial_long_capital: Initial capital for long positions (1M)
         initial_short_capital: Initial capital for short positions (1M)
         commission: Commission rate for trades
         max_shares_per_trade: Max percentage of portfolio value to trade in one step
         action_change_penalty_threshold: Threshold for penalizing large action changes
-        algorithm: RL algorithm to use ("PPO", "SAC" or "DDPG")
+        algorithm: RL algorithm to use ("PPO" or "DDPG")
+        n_envs: Number of parallel environments for training
         verbose: Whether to print progress messages
     
     Returns:
@@ -75,6 +79,8 @@ def train_hedging_model(
     
     # Extract prices and features
     prices = df['Close'].astype(np.float32).values
+    if np.any(prices <= 0):  # CAMBIO: Validar precios no negativos
+        raise ValueError("Prices contain non-positive values")
     
     # Remove Date and Close from features
     feature_columns = [col for col in df.columns if col not in ['Date', 'Close']]
@@ -86,23 +92,24 @@ def train_hedging_model(
         print(f"Price data points: {len(prices)}")
         print(f"Date range: {dates[0]} to {dates[-1]}")
     
-    # Create environments
-    # -- Pasar los nuevos parámetros al entorno ---
-    train_env = PortfolioHedgingEnv(
-        features=features,
-        prices=prices,
-        dates=dates,
-        episode_length_months=episode_length_months,
-        window_size=window_size,
-        dead_zone=dead_zone,
-        initial_portfolio_value=initial_portfolio_value,
-        initial_long_capital=initial_long_capital,
-        initial_short_capital=initial_short_capital,
-        commission=commission,
-        max_shares_per_trade=max_shares_per_trade,
-        action_change_penalty_threshold=action_change_penalty_threshold
-    )
+    # CAMBIO: Vectorizar el entorno para entrenamiento paralelo
+    def make_env():
+        return PortfolioHedgingEnv(
+            features=features,
+            prices=prices,
+            dates=dates,
+            episode_length_months=episode_length_months,
+            window_size=window_size,
+            dead_zone=dead_zone,
+            initial_portfolio_value=initial_portfolio_value,
+            initial_long_capital=initial_long_capital,
+            initial_short_capital=initial_short_capital,
+            commission=commission,
+            max_shares_per_trade=max_shares_per_trade,
+            action_change_penalty_threshold=action_change_penalty_threshold
+        )
     
+    train_env = make_vec_env(lambda: make_env(), n_envs=n_envs, seed=0)
     eval_env = PortfolioHedgingEnv(
         features=features,
         prices=prices,
@@ -122,35 +129,35 @@ def train_hedging_model(
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
     
     # Create model based on algorithm choice
-    if algorithm.upper() == "DDPG": # Lógica para DDPG
+    if algorithm.upper() == "DDPG":
         if verbose:
             print("Using DDPG (Deep Deterministic Policy Gradient) for continuous hedging control...")
         
-        # DDPG typically uses Ornstein-Uhlenbeck noise for exploration
         n_actions = train_env.action_space.shape[-1]
-        action_noise = OrnsteinUhlenbeckActionNoise(mean=np.zeros(n_actions), sigma=0.3 * np.ones(n_actions))
+        action_noise = OrnsteinUhlenbeckActionNoise(
+            mean=np.zeros(n_actions),
+            sigma=0.2 * np.ones(n_actions)  # CAMBIO: Reducir sigma para menos ruido
+        )
         
-        model = DDPG( # <-- CAMBIO: Usar DDPG
+        model = DDPG(
             "MlpPolicy",
             train_env,
             action_noise=action_noise,
             verbose=1,
             tensorboard_log=log_dir,
-            learning_rate=1e-4, # DDPG often benefits from smaller learning rates
-            buffer_size=100000,
-            learning_starts=1000,
-            batch_size=128, # Smaller batch size than SAC sometimes
+            learning_rate=1e-4,
+            buffer_size=1_000_000,  # CAMBIO: Aumentar buffer para entornos complejos
+            learning_starts=10_000,  # CAMBIO: Más pasos antes de entrenar
+            batch_size=256,  # CAMBIO: Mayor batch size para estabilidad
             tau=0.005,
             gamma=0.99,
-            train_freq=(1, "episode"), # DDPG often updates per episode
-            gradient_steps=-1, # -1 means update until buffer is empty for SAC/DDPG after each step
-            # DDPG specific parameters (these might need fine-tuning)
-            optimize_memory_usage=False, # True can be slow for large buffer_size
-            policy_kwargs=dict(net_arch=dict(pi=[400, 300], qf=[400, 300])) # Common DDPG network architecture
+            train_freq=(1, "episode"),
+            gradient_steps=1,  # CAMBIO: Fijar a 1 para actualizaciones controladas
+            policy_kwargs=dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))  # CAMBIO: Arquitectura más compacta
         )
         model_prefix = "ddpg_hedging"
         
-    else: # PPO
+    else:  # PPO
         if verbose:
             print("Using PPO (Proximal Policy Optimization) for hedging...")
         
@@ -160,16 +167,16 @@ def train_hedging_model(
             verbose=1,
             tensorboard_log=log_dir,
             learning_rate=3e-4,
-            n_steps=2048,
+            n_steps=2048 // n_envs,  # CAMBIO: Ajustar n_steps para entornos paralelos
             batch_size=64,
             n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            clip_range_vf=None,
-            ent_coef=0.0,
+            ent_coef=0.01,  # CAMBIO: Añadir entropía para exploración
             vf_coef=0.5,
-            max_grad_norm=0.5
+            max_grad_norm=0.5,
+            policy_kwargs=dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])  # CAMBIO: Arquitectura más compacta
         )
         model_prefix = "ppo_hedging"
     
@@ -177,7 +184,7 @@ def train_hedging_model(
     
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
-        save_freq=10_000,
+        save_freq=max(10_000 // n_envs, 1),  # CAMBIO: Ajustar save_freq para entornos paralelos
         save_path=checkpoints_dir,
         name_prefix=model_prefix
     )
@@ -186,7 +193,7 @@ def train_hedging_model(
         eval_env,
         best_model_save_path=best_model_dir,
         log_path=eval_log_dir,
-        eval_freq=5_000,
+        eval_freq=max(5_000 // n_envs, 1),  # CAMBIO: Ajustar eval_freq
         n_eval_episodes=10,
         deterministic=True,
         render=False
@@ -196,7 +203,7 @@ def train_hedging_model(
     if verbose:
         print(f"Training {algorithm} for {total_timesteps} timesteps...")
         print(f"Episode length: {episode_length_months} months")
-        print(f"Portfolio value: ${initial_portfolio_value:,}") # <-- Usar initial_portfolio_value
+        print(f"Portfolio value: ${initial_portfolio_value:,}")
         print(f"Dead zone: ±{dead_zone*100:.1f}%")
         print(f"Action change penalty threshold: {action_change_penalty_threshold:.2f}")
     
@@ -223,11 +230,13 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
     df['Date'] = pd.to_datetime(df['Date'])
     dates = df['Date'].values
     prices = df['Close'].astype(np.float32).values
+    if np.any(prices <= 0):  # CAMBIO: Validar precios no negativos
+        raise ValueError("Prices contain non-positive values")
+    
     feature_columns = [col for col in df.columns if col not in ['Date', 'Close']]
     features = df[feature_columns].astype(np.float32).values
     
     # Create environment
-    # --- CAMBIO: Asegurarse de que los parámetros del entorno de evaluación coincidan ---
     env = PortfolioHedgingEnv(
         features=features,
         prices=prices,
@@ -244,7 +253,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
     )
     
     # Load model
-    if "ddpg" in model_path.lower(): # Cargar DDPG
+    if "ddpg" in model_path.lower():
         model = DDPG.load(model_path)
     else:
         model = PPO.load(model_path)
@@ -255,24 +264,26 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         obs, info = env.reset()
         done = False
         step_count = 0
+        total_reward = 0.0  # CAMBIO: Acumular recompensa total
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action) 
+            obs, reward, terminated, truncated, info = env.step(action)
+            total_reward += reward  # CAMBIO: Sumar recompensa
             done = terminated or truncated
             step_count += 1
         
-        print(f"    Reward this step: {reward:.5f}")
-
         stats = env.get_episode_stats()
         stats['episode'] = episode
         stats['steps'] = step_count
+        stats['total_reward'] = total_reward  # CAMBIO: Añadir recompensa total
         episode_stats.append(stats)
         
         if verbose:
             print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
                   f"Sharpe={stats['sharpe_ratio']:.3f}, "
                   f"Max DD={stats['max_drawdown']*100:.2f}%, "
+                  f"Total Reward={stats['total_reward']:.2f}, "
                   f"Final Pos Net Shares={stats['final_position_net_shares']:.2f}")
     
     # Summary statistics
@@ -282,6 +293,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         print(f"Average Return: {stats_df['total_return'].mean()*100:.2f}% ± {stats_df['total_return'].std()*100:.2f}%")
         print(f"Average Sharpe Ratio: {stats_df['sharpe_ratio'].mean():.3f} ± {stats_df['sharpe_ratio'].std():.3f}")
         print(f"Average Max Drawdown: {stats_df['max_drawdown'].mean()*100:.2f}% ± {stats_df['max_drawdown'].std()*100:.2f}%")
+        print(f"Average Total Reward: {stats_df['total_reward'].mean():.2f} ± {stats_df['total_reward'].std():.2f}")
         print(f"Win Rate: {(stats_df['total_return'] > 0).mean()*100:.1f}%")
     
     return stats_df

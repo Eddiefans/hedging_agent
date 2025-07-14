@@ -12,7 +12,7 @@ class PortfolioHedgingEnv(gym.Env):
         episode_months: int = 6, 
         window_size: int = 5, 
         dead_zone: float = 0.01, 
-        comission: float = 0.00125, 
+        commission: float = 0.00125, 
         initial_capital: float = 2_000_000.0,
         render_mode: str | None = "human"
     ):
@@ -29,7 +29,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.episode_months = episode_months
         self.window_size = window_size, 
         self.dead_zone = dead_zone,
-        self.comission = comission, 
+        self.commission = commission, 
         self.initial_capital = initial_capital
         self.render_mode = render_mode
         
@@ -144,11 +144,11 @@ class PortfolioHedgingEnv(gym.Env):
             long_volume_to_trade = long_shares_to_trade * current_price
             short_volume_to_trade = short_shares_to_trade * current_price
             
-            long_comission_to_pay = abs(long_volume_to_trade) * self.comission
-            short_comission_to_pay = abs(short_volume_to_trade) * self.comission
+            long_commission_to_pay = abs(long_volume_to_trade) * self.commission
+            short_commission_to_pay = abs(short_volume_to_trade) * self.commission
             
-            self.long_cash -= (long_volume_to_trade + long_comission_to_pay)
-            self.short_cash += (short_volume_to_trade - short_comission_to_pay)
+            self.long_cash -= (long_volume_to_trade + long_commission_to_pay)
+            self.short_cash += (short_volume_to_trade - short_commission_to_pay)
             
             self.long_shares += long_shares_to_trade
             self.short_shares += short_shares_to_trade

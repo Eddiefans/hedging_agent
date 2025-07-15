@@ -186,7 +186,8 @@ class PortfolioHedgingEnv(gym.Env):
         reward = step_return * 100.0
         if abs(diff_action) > 0.1:
             reward -= abs(diff_action) * 10.0
-            
+        # reward = np.clip(reward, -10.0, 10.0) 
+
         return reward
     
     

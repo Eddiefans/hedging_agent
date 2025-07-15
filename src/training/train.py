@@ -184,6 +184,70 @@ def train_hedging_model(
     
     return model
 
+def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose=True):
+    
+    df = pd.read_csv(data_path)
+    df['Date'] = pd.to_datetime(df['Date'])
+    prices = df['Close'].astype(np.float32).values
+    if np.any(prices <= 0):  
+        raise ValueError("Prices contain non-positive values")
+    
+    feature_columns = [col for col in df.columns if col not in ['Date', 'Close']]
+    features = df[feature_columns].astype(np.float32).values
+    
+    env = PortfolioHedgingEnv(
+        features=features,
+        prices=prices,
+        episode_months=6,
+        window_size=5,
+        dead_zone=0.01,
+        commission=0.00125,
+        initial_capital=2_000_000
+    )
+    
+    # Load model
+    if "ddpg" in model_path.lower():
+        model = DDPG.load(model_path)
+    else:
+        model = PPO.load(model_path)
+    
+    # Run episodes
+    episode_stats = []
+    for episode in range(n_episodes):
+        obs, info = env.reset()
+        done = False
+        step_count = 0
+        total_reward = 0.0  
+        
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, info = env.step(action)
+            total_reward += reward  
+            done = terminated or truncated
+            step_count += 1
+        
+        stats = env.get_episode_stats()
+        stats['episode'] = episode
+        stats['steps'] = step_count
+        stats['total_reward'] = total_reward  
+        episode_stats.append(stats)
+        
+        if verbose:
+            print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
+                  f"Sharpe={stats['sharpe_ratio']:.3f}, "
+                  f"Total Reward={stats['total_reward']:.2f}, ")
+    
+    # Summary statistics
+    stats_df = pd.DataFrame(episode_stats)
+    if verbose:
+        print("\n=== Summary Statistics ===")
+        print(f"Average Return: {stats_df['total_return'].mean()*100:.2f}% ± {stats_df['total_return'].std()*100:.2f}%")
+        print(f"Average Sharpe Ratio: {stats_df['sharpe_ratio'].mean():.3f} ± {stats_df['sharpe_ratio'].std():.3f}")
+        print(f"Average Total Reward: {stats_df['total_reward'].mean():.2f} ± {stats_df['total_reward'].std():.2f}")
+        print(f"Win Rate: {(stats_df['total_return'] > 0).mean()*100:.1f}%")
+    
+    return stats_df
+
 if __name__ == "__main__":
     import argparse
     
@@ -196,13 +260,21 @@ if __name__ == "__main__":
                        help='Total training timesteps')
     parser.add_argument('--episode_months', type=int, default=6,
                        help='Episode length in months')
+    parser.add_argument('--evaluate', action='store_true',
+                        help='Evaluate existing model instead of training')
+    parser.add_argument('--model_path', default="models/best_model/ddpg_hedging_best_model",
+                        help='Path to model for evaluation')
     
     args = parser.parse_args()
     
-    print("Training model...")
-    trained_model = train_hedging_model(
-        data_path=args.data_path,
-        total_timesteps=args.timesteps,
-        episode_months=args.episode_months,
-        algorithm=args.algorithm
-    )
+    if args.evaluate:
+        print("Evaluating model...")
+        evaluate_model_sample_episodes(args.model_path, args.data_path)
+    else:
+        print("Training model...")
+        trained_model = train_hedging_model(
+            data_path=args.data_path,
+            total_timesteps=args.timesteps,
+            episode_months=args.episode_months,
+            algorithm=args.algorithm
+        )

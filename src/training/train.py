@@ -234,8 +234,10 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         
         if verbose:
             print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
+                  f"Action={stats['action']}, "
                   f"Sharpe={stats['sharpe_ratio']:.3f}, "
                   f"Total Reward={stats['total_reward']:.2f}, ")
+        portfolio = stats["portfolio"]
     
     # Summary statistics
     stats_df = pd.DataFrame(episode_stats)
@@ -245,6 +247,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         print(f"Average Sharpe Ratio: {stats_df['sharpe_ratio'].mean():.3f} ± {stats_df['sharpe_ratio'].std():.3f}")
         print(f"Average Total Reward: {stats_df['total_reward'].mean():.2f} ± {stats_df['total_reward'].std():.2f}")
         print(f"Win Rate: {(stats_df['total_return'] > 0).mean()*100:.1f}%")
+        print(portfolio)
     
     return stats_df
 
@@ -262,7 +265,7 @@ if __name__ == "__main__":
                        help='Episode length in months')
     parser.add_argument('--evaluate', action='store_true',
                         help='Evaluate existing model instead of training')
-    parser.add_argument('--model_path', default="models/best_model/ddpg_hedging_best_model",
+    parser.add_argument('--model_path', default="models/best_model/best_model",
                         help='Path to model for evaluation')
     
     args = parser.parse_args()

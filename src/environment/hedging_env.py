@@ -52,21 +52,20 @@ class PortfolioHedgingEnv(gym.Env):
         self.current_index = None
         self.episode_done = False
         
-        self.total_portfolio_value = self.initial_capital
-        self.long_portfolio_value = self.total_portfolio_value / 2
-        self.short_portfolio_value = self.total_portfolio_value / 2
-        
         self.total_cash = self.initial_capital
-        self.long_cash = self.initial_capital / 2
-        self.short_cash = self.initial_capital / 2
+        self.long_cash = self.total_cash / 2
+        self.short_cash = self.total_cash / 2
         
         self.long_shares = 0
         self.short_shares = 0
         
-        self.historical_portfolio = [self.total_portfolio_value]
-        self.historical_long_shares = [0]
-        self.historical_short_shares = [0]
-        self.historical_cash = [self.total_cash]
+        self.refresh_portfolio(price = 0.0)
+        
+        
+        self.historical_portfolio = []
+        self.historical_long_shares = []
+        self.historical_short_shares = []
+        self.historical_cash = []
         self.historical_actions = []
         self.historical_returns = []
         
@@ -79,28 +78,78 @@ class PortfolioHedgingEnv(gym.Env):
         self.start_index = self.np_random.integers(
             low = self.min_start_index, high = self.max_start_index
         )
-        self.current_index = self.start_index
-        self.episode_done = False
-        
-        self.total_portfolio_value = self.initial_capital
-        self.long_portfolio_value = self.total_portfolio_value / 2
-        self.short_portfolio_value = self.total_portfolio_value / 2
         
         self.total_cash = self.initial_capital
-        self.long_cash = self.initial_capital / 2
-        self.short_cash = self.initial_capital / 2
+        self.long_cash = self.total_cash / 2
+        self.short_cash = self.total_cash / 2
         
         self.long_shares = 0
         self.short_shares = 0
         
-        self.historical_portfolio = [self.total_portfolio_value]
-        self.historical_long_shares = [0]
-        self.historical_short_shares = [0]
-        self.historical_cash = [self.total_cash]
+        self.refresh_portfolio()
+        
+        self.historical_portfolio = []
+        self.historical_long_shares = []
+        self.historical_short_shares = []
+        self.historical_cash = []
         self.historical_actions = []
         self.historical_returns = []
         
+        self.trade(action = 1.0)
+        
         return self._get_observation(), self._get_info()
+    
+    def trade(self, action):
+        
+        # Get current price based on the current index
+        current_price = self.prices[self.current_index]
+        
+        # Get the cost of share
+        cost_per_share = current_price * (1 + self.commission)
+            
+        # Refresh values
+        self.refresh_portfolio()
+
+        if action >= 1:
+            
+            # Hold all long positions:
+            shares_to_buy = int(self.long_cash / cost_per_share)
+            position_to_buy = shares_to_buy * cost_per_share
+            
+            self.long_cash -= position_to_buy
+            self.long_shares += shares_to_buy
+            
+        else:
+            
+            # Close all short positions
+            shares_to_buy_to_cover = self.short_shares
+            position_to_buy_to_cover = shares_to_buy_to_cover * cost_per_share
+            
+            self.short_cash -= position_to_buy_to_cover
+            self.short_shares = 0
+            
+        self.refresh_portfolio(price = current_price)
+            
+            
+            
+    def refresh_portfolio(self, price: float | None = None):
+        """
+        Refresh portfolio values based on current shares and cash.
+        """
+        if price is None:
+            price = self.prices[self.current_index]
+        
+        self.long_position = self.long_shares * price
+        self.short_position =  self.short_shares * price
+        
+        self.long_portfolio_value = self.long_cash + self.long_position
+        self.short_portfolio_value = self.short_cash + self.short_position
+        self.total_portfolio_value = self.long_portfolio_value + self.short_portfolio_value
+            
+            
+            
+            
+        
     
     
     def step(
@@ -112,7 +161,7 @@ class PortfolioHedgingEnv(gym.Env):
         
         current_price = self.prices[self.current_index]
         long_portfolio_before = current_price * self.long_shares + self.long_cash
-        short_portfolio_before = current_price * self.short_shares + self.short_cash
+        short_portfolio_before = - (current_price * self.short_shares) + self.short_cash
         portfolio_before = long_portfolio_before + short_portfolio_before
         
         action = np.clip(action[0], self.action_space.low[0], self.action_space.high[0])
@@ -160,7 +209,7 @@ class PortfolioHedgingEnv(gym.Env):
         
         next_price = self.prices[self.current_index]
         self.long_portfolio_value = self.long_shares * next_price + self.long_cash
-        self.short_portfolio_value = self.short_shares * next_price + self.short_cash   
+        self.short_portfolio_value = - (self.short_shares * next_price) + self.short_cash   
         self.total_portfolio_value = self.long_portfolio_value + self.short_portfolio_value
         
         step_return = (self.total_portfolio_value - portfolio_before) / portfolio_before
@@ -171,6 +220,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.historical_cash.append(self.total_cash)
         self.historical_actions.append(action)
         self.historical_returns.append(step_return)
+        self.action = action
             
         reward = self._calculate_reward(step_return, diff_action)
         obs = self._get_observation()
@@ -185,7 +235,7 @@ class PortfolioHedgingEnv(gym.Env):
         
         reward = step_return * 100.0
         if abs(diff_action) > 0.1:
-            reward -= abs(diff_action) * 10.0
+            reward -= abs(diff_action) * 5.0
         # reward = np.clip(reward, -10.0, 10.0) 
 
         return reward
@@ -227,13 +277,23 @@ class PortfolioHedgingEnv(gym.Env):
             stats_window
         ))
         
+        obs = obs.astype(np.float32)
         return obs
     
     def _get_info(self) -> dict:
         index = self.current_index
         if index >= len(self.prices):
             index = len(self.prices) - 1
-        
+        # print({
+        #     "current_index": index,
+        #     "current_price": self.prices[index],
+        #     "portfolio_value": self.total_portfolio_value,
+        #     "cash": self.total_cash,
+        #     "long_shares": self.long_shares,
+        #     "short_shares": self.short_shares,
+        #     "episode_step": self.current_index - self.start_index,
+        #     "episode_length_days": self.episode_days
+        # })
         return {
             "current_index": index,
             "current_price": self.prices[index],
@@ -263,9 +323,11 @@ class PortfolioHedgingEnv(gym.Env):
             "sharpe_ratio": sharpe_ratio,
             "num_trades": num_trades,
             "final_portfolio_value": self.historical_portfolio[-1],
+            "portfolio": self.historical_portfolio,
             "final_cash": self.total_cash,
             "final_long_shares": self.long_shares,
-            "final_short_shares": self.short_shares
+            "final_short_shares": self.short_shares,
+            "action": self.action
         }
 
 
@@ -278,7 +340,7 @@ class PortfolioHedgingEnv(gym.Env):
                 
             current_price = self.prices[index]
             long_portfolio_value = self.long_shares * current_price + self.long_cash
-            short_portfolio_value = self.short_shares * current_price + self.short_cash   
+            short_portfolio_value = -(self.short_shares * current_price) + self.short_cash   
             portfolio_value =  long_portfolio_value + short_portfolio_value
             
             print(f"Current index: {index}, "
@@ -293,5 +355,4 @@ class PortfolioHedgingEnv(gym.Env):
     def close(self) -> None:
         if self.render_mode == "human":
             print("Environment closed.")
-            
             

@@ -69,7 +69,7 @@ def train_hedging_model(
         window_size=window_size,
         dead_zone=dead_zone,
         commission=commission,
-        initial_portfolio=initial_capital
+        initial_capital=initial_capital
     )
     
     eval_env = PortfolioHedgingEnv(
@@ -79,7 +79,7 @@ def train_hedging_model(
         window_size=window_size,
         dead_zone=dead_zone,
         commission=commission,
-        initial_portfolio=initial_capital
+        initial_capital=initial_capital
     )
     
     # Configure logging

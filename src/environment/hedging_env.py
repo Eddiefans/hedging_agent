@@ -24,12 +24,12 @@ class PortfolioHedgingEnv(gym.Env):
         assert len(features) > window_size, f"Features length ({len(features)}) must be greater than window_size ({window_size})"
         assert all(prices >= 0), "Prices must be non-negative"
         
-        self.features = features, 
-        self.prices = prices, 
+        self.features = features
+        self.prices = prices
         self.episode_months = episode_months
-        self.window_size = window_size, 
-        self.dead_zone = dead_zone,
-        self.commission = commission, 
+        self.window_size = window_size
+        self.dead_zone = dead_zone
+        self.commission = commission
         self.initial_capital = initial_capital
         self.render_mode = render_mode
         
@@ -39,7 +39,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf, 
             high=np.inf, 
-            shape=(self.window_size, len(self.features[0]) + 4), # + 4 for additional portfolio state variables: current_long_sahres, current_short_shares, cash, portfolio_value 
+            shape=(self.window_size, self.features.shape[1]  + 4), # + 4 for additional portfolio state variables: current_long_sahres, current_short_shares, cash, portfolio_value 
             dtype=np.float32
         )      
         
@@ -57,8 +57,8 @@ class PortfolioHedgingEnv(gym.Env):
         self.short_portfolio_value = self.total_portfolio_value / 2
         
         self.total_cash = self.initial_capital
-        self.long_cash = self.total_capital / 2
-        self.short_cash = self.total_capital / 2
+        self.long_cash = self.initial_capital / 2
+        self.short_cash = self.initial_capital / 2
         
         self.long_shares = 0
         self.short_shares = 0
@@ -87,8 +87,8 @@ class PortfolioHedgingEnv(gym.Env):
         self.short_portfolio_value = self.total_portfolio_value / 2
         
         self.total_cash = self.initial_capital
-        self.long_cash = self.total_capital / 2
-        self.short_cash = self.total_capital / 2
+        self.long_cash = self.initial_capital / 2
+        self.short_cash = self.initial_capital / 2
         
         self.long_shares = 0
         self.short_shares = 0
@@ -163,7 +163,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.short_portfolio_value = self.short_shares * next_price + self.short_cash   
         self.total_portfolio_value = self.long_portfolio_value + self.short_portfolio_value
         
-        step_return = (self.total_portfolio_value - portfolio_before) / self.portfolio_before
+        step_return = (self.total_portfolio_value - portfolio_before) / portfolio_before
         
         self.historical_portfolio.append(self.total_portfolio_value)
         self.historical_long_shares.append(self.long_shares)
@@ -292,3 +292,5 @@ class PortfolioHedgingEnv(gym.Env):
     def close(self) -> None:
         if self.render_mode == "human":
             print("Environment closed.")
+            
+            

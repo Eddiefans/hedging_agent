@@ -246,7 +246,6 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         print(f"Average Sharpe Ratio: {stats_df['sharpe_ratio'].mean():.3f} ± {stats_df['sharpe_ratio'].std():.3f}")
         print(f"Average Total Reward: {stats_df['total_reward'].mean():.2f} ± {stats_df['total_reward'].std():.2f}")
         print(f"Win Rate: {(stats_df['total_return'] > 0).mean()*100:.1f}%")
-        print(portfolio)
     
     return stats_df
 

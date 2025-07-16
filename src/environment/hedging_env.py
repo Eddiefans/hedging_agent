@@ -262,11 +262,79 @@ class PortfolioHedgingEnv(gym.Env):
         self, step_return: float, diff_action: float
     ) -> float:
         
-        reward = step_return * 100.0
-        if abs(diff_action) > 0.1:
-            reward -= abs(diff_action) * 5.0
-        # reward = np.clip(reward, -10.0, 10.0) 
-
+        # Step return as the main reward
+        reward = step_return * 10.0 
+        
+        # More rewrd for positive returns
+        if step_return > 0:
+            reward += 0.1  
+            
+            # Even more reward if the return is more than 1% daily
+            if step_return > 0.01:  
+                reward += 0.2
+        
+        # Penalty for daily return less than -1%
+        elif step_return < -0.01: 
+            reward -= 0.1
+        
+        
+        if diff_action > self.dead_zone:
+            # Penalty for large unprofitable actions
+            if diff_action > 0.2 and step_return < 0:
+                reward -= 0.05 
+            
+            # More reward for positive returns with changes bigger than dead zone
+            elif step_return > 0:
+                reward += 0.02 
+        
+        current_action = self.historical_actions[-1] if self.historical_actions else 1.0
+        
+        # Penalize extreme positions if they're losing money
+        if step_return < 0:
+            if current_action < 0.2 or current_action > 1.8:  
+                reward -= 0.1
+            elif current_action < 0.5 or current_action > 1.5:  
+                reward -= 0.03
+        
+        # Penalty for high volatility
+        if len(self.historical_returns) >= 5:
+            recent_returns = self.historical_returns[-5:]
+            volatility = np.std(recent_returns)
+            
+            # Penalize only if it's not generating good returns
+            if volatility > 0.02:  # 2% daily volatility
+                avg_return = np.mean(recent_returns)
+                if avg_return <= 0:  
+                    reward -= volatility * 5.0
+        
+        # Reward more consistent performance
+        if len(self.historical_returns) >= 10:
+            recent_returns = self.historical_returns[-10:]
+            positive_days = sum(1 for r in recent_returns if r > 0)
+            
+            if positive_days >= 7:  # 70% positive days
+                reward += 0.15
+            elif positive_days >= 6:  # 60% positive days
+                reward += 0.05
+        
+        # Benchmark comparison
+        if len(self.historical_returns) >= 21:  # Minimum one month of history
+            # Portfolio performance last month
+            portfolio_return = (self.total_portfolio_value - self.historical_portfolio[0]) / self.historical_portfolio[0]
+            
+            # Benchmark performance last month
+            current_price = self.prices[self.current_index] if self.current_index < len(self.prices) else self.prices[-1]
+            initial_price = self.prices[self.start_index]
+            benchmark_return = (current_price - initial_price) / initial_price
+            
+            # More reward for outperforming benchmark
+            if portfolio_return > benchmark_return:
+                outperformance = portfolio_return - benchmark_return
+                reward += outperformance * 5.0 
+        
+        # Clip reward 
+        reward = np.clip(reward, -2.0, 2.0)
+        
         return reward
     
     

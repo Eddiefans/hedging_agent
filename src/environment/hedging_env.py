@@ -11,7 +11,7 @@ class PortfolioHedgingEnv(gym.Env):
         prices: np.ndarray, 
         episode_months: int = 6, 
         window_size: int = 5, 
-        dead_zone: float = 0.01, 
+        dead_zone: float = 0.05, 
         commission: float = 0.00125, 
         initial_capital: float = 2_000_000.0,
         render_mode: str | None = "human"
@@ -78,6 +78,8 @@ class PortfolioHedgingEnv(gym.Env):
         self.start_index = self.np_random.integers(
             low = self.min_start_index, high = self.max_start_index
         )
+        self.current_index = self.start_index
+        self.episode_done = False
         
         self.total_cash = self.initial_capital
         self.long_cash = self.total_cash / 2
@@ -95,12 +97,14 @@ class PortfolioHedgingEnv(gym.Env):
         self.historical_actions = []
         self.historical_returns = []
         
+        # Start with 100% long, no hedging
         self.trade(action = 1.0)
+        self.update_historical(action = 1.0, returnp = 0.00)
         
         return self._get_observation(), self._get_info()
     
     
-    def trade(self, action):
+    def trade(self, action: float):
         
         # Get current price based on the current index
         current_price = self.prices[self.current_index]
@@ -188,8 +192,18 @@ class PortfolioHedgingEnv(gym.Env):
                 self.long_shares += shares_to_buy
                  
         self.refresh_portfolio(price = current_price)
+        
+        
             
-            
+    def update_historical(self, action: float, returnp: float):
+        
+        self.historical_portfolio.append(self.total_portfolio_value)
+        self.historical_long_shares.append(self.long_shares)
+        self.historical_short_shares.append(self.short_shares)
+        self.historical_cash.append(self.total_cash)
+        self.historical_actions.append(action)
+        self.historical_returns.append(returnp)
+        
             
     def refresh_portfolio(self, price: float | None = None):
         """
@@ -207,9 +221,6 @@ class PortfolioHedgingEnv(gym.Env):
             
             
             
-            
-        
-    
     
     def step(
         self, action: np.ndarray
@@ -218,68 +229,27 @@ class PortfolioHedgingEnv(gym.Env):
         if self.episode_done:
             raise RuntimeError("Episode is done. Please reset the environment.")
         
-        current_price = self.prices[self.current_index]
-        long_portfolio_before = current_price * self.long_shares + self.long_cash
-        short_portfolio_before = - (current_price * self.short_shares) + self.short_cash
-        portfolio_before = long_portfolio_before + short_portfolio_before
-        
+        # Clip the action to fit the space box
         action = np.clip(action[0], self.action_space.low[0], self.action_space.high[0])
         
-        trade = True
+        # Get the difference with respect to the previous action
+        diff_action = abs(action - self.historical_actions[-1])
         
-        if self.historical_actions:
-            last_action = self.historical_actions[-1]
-            if abs(action - last_action) < self.dead_zone:
-                trade = False
-                action = last_action
-            diff_action = abs(action - last_action)
-        else: 
-            diff_action = 0
+        # Trade only if the difference is higher than the dead zone
+        if diff_action > self.dead_zone:
+            self.trade(action)
         
-        if trade:
-            
-            if action <= 1:
-                
-                target_long_shares = int(action * long_portfolio_before / current_price)
-                target_short_shares = 0
-            else:
-                target_long_shares = int(long_portfolio_before / current_price)
-                target_short_shares = int((action - 1) * short_portfolio_before / current_price)
-                
-            long_shares_to_trade = target_long_shares - self.long_shares
-            short_shares_to_trade = target_short_shares - self.short_shares
-            
-            long_volume_to_trade = long_shares_to_trade * current_price
-            short_volume_to_trade = short_shares_to_trade * current_price
-            
-            long_commission_to_pay = abs(long_volume_to_trade) * self.commission
-            short_commission_to_pay = abs(short_volume_to_trade) * self.commission
-            
-            self.long_cash -= (long_volume_to_trade + long_commission_to_pay)
-            self.short_cash += (short_volume_to_trade - short_commission_to_pay)
-            
-            self.long_shares += long_shares_to_trade
-            self.short_shares += short_shares_to_trade
-            
-            self.total_cash = self.long_cash + self.short_cash
-            
+        # Take a step
         self.current_index += 1
         self.episode_done = self.current_index >= (self.start_index + self.episode_days)
         
-        next_price = self.prices[self.current_index]
-        self.long_portfolio_value = self.long_shares * next_price + self.long_cash
-        self.short_portfolio_value = - (self.short_shares * next_price) + self.short_cash   
-        self.total_portfolio_value = self.long_portfolio_value + self.short_portfolio_value
+        # Get the return in the portfolio value
+        self.refresh_portfolio()
+        step_return = (self.total_portfolio_value - self.historical_portfolio[-1]) / self.historical_portfolio[-1]
         
-        step_return = (self.total_portfolio_value - portfolio_before) / portfolio_before
+        # Update historical data
+        self.update_historical(action, step_return)
         
-        self.historical_portfolio.append(self.total_portfolio_value)
-        self.historical_long_shares.append(self.long_shares)
-        self.historical_short_shares.append(self.short_shares)
-        self.historical_cash.append(self.total_cash)
-        self.historical_actions.append(action)
-        self.historical_returns.append(step_return)
-        self.action = action
             
         reward = self._calculate_reward(step_return, diff_action)
         obs = self._get_observation()
@@ -343,16 +313,7 @@ class PortfolioHedgingEnv(gym.Env):
         index = self.current_index
         if index >= len(self.prices):
             index = len(self.prices) - 1
-        # print({
-        #     "current_index": index,
-        #     "current_price": self.prices[index],
-        #     "portfolio_value": self.total_portfolio_value,
-        #     "cash": self.total_cash,
-        #     "long_shares": self.long_shares,
-        #     "short_shares": self.short_shares,
-        #     "episode_step": self.current_index - self.start_index,
-        #     "episode_length_days": self.episode_days
-        # })
+            
         return {
             "current_index": index,
             "current_price": self.prices[index],
@@ -385,8 +346,7 @@ class PortfolioHedgingEnv(gym.Env):
             "portfolio": self.historical_portfolio,
             "final_cash": self.total_cash,
             "final_long_shares": self.long_shares,
-            "final_short_shares": self.short_shares,
-            "action": self.action
+            "final_short_shares": self.short_shares
         }
 
 

@@ -23,7 +23,7 @@ def train_hedging_model(
     total_timesteps=10_000_000,
     episode_months=6,
     window_size=5,
-    dead_zone=0.01,  
+    dead_zone=0.03,  
     initial_capital=2_000_000,
     commission=0.00125,
     algorithm="PPO",
@@ -234,7 +234,6 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         
         if verbose:
             print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
-                  f"Action={stats['action']}, "
                   f"Sharpe={stats['sharpe_ratio']:.3f}, "
                   f"Total Reward={stats['total_reward']:.2f}, ")
         portfolio = stats["portfolio"]

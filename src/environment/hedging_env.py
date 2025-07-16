@@ -72,7 +72,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.reset()
         
         
-    def reset(self, seed : int = 42):
+    def reset(self, seed : int | None = None):
         super().reset(seed=seed)
         
         self.start_index = self.np_random.integers(

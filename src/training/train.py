@@ -23,7 +23,7 @@ def train_hedging_model(
     total_timesteps=10_000_000,
     episode_months=6,
     window_size=5,
-    dead_zone=0.03,  
+    dead_zone=0.02,  
     initial_capital=2_000_000,
     commission=0.00125,
     algorithm="PPO",

@@ -99,6 +99,7 @@ class PortfolioHedgingEnv(gym.Env):
         
         return self._get_observation(), self._get_info()
     
+    
     def trade(self, action):
         
         # Get current price based on the current index
@@ -112,12 +113,43 @@ class PortfolioHedgingEnv(gym.Env):
 
         if action >= 1:
             
-            # Hold all long positions:
+            # Open all long positions:
             shares_to_buy = int(self.long_cash / cost_per_share)
             position_to_buy = shares_to_buy * cost_per_share
             
             self.long_cash -= position_to_buy
             self.long_shares += shares_to_buy
+            
+            # Open <action>% of short 
+            
+            if action != 1:
+                 
+                # Check if we need to sell in short more or buy to cover some
+                shares_to_hold = int((self.short_portfolio_value * action) / current_price)
+                if self.short_shares > shares_to_hold:
+                    
+                    # Buy to cover some
+                    shares_to_buy_to_cover = self.short_shares - shares_to_hold
+                    position_to_buy_to_cover = shares_to_buy_to_cover * cost_per_share
+                    
+                    # Check if I have enough cash to deduct commissions
+                    if position_to_buy_to_cover > self.short_cash:
+                        missing_shares = np.ceil((position_to_buy_to_cover - self.short_cash) / cost_per_share) # Number of shares that we don't have money for
+                        shares_to_buy_to_cover -= missing_shares
+                        position_to_buy_to_cover = shares_to_buy_to_cover * cost_per_share
+                        
+                    self.short_cash -= position_to_buy_to_cover
+                    self.short_shares -= shares_to_buy_to_cover
+                
+                elif self.short_shares < shares_to_hold:
+                    
+                    # Sell in short more
+                    shares_to_short = shares_to_hold - self.short_shares
+                    position_to_short = shares_to_short * current_price
+                    
+                    self.short_cash += position_to_short * (1 - self.commission)
+                    self.short_shares += shares_to_short
+                
             
         else:
             
@@ -128,6 +160,33 @@ class PortfolioHedgingEnv(gym.Env):
             self.short_cash -= position_to_buy_to_cover
             self.short_shares = 0
             
+            # Open <action>% of long positions
+            
+            # Check if we need to buy more or sell some
+            shares_to_hold = int((self.long_portfolio_value * action) / current_price)
+            if self.long_shares > shares_to_hold:
+                
+                # Sell some
+                shares_to_sell = self.long_shares - shares_to_hold
+                position_to_sell = shares_to_sell * current_price
+                
+                self.long_cash += position_to_sell * (1 - self.commission)
+                self.long_shares -= shares_to_sell
+                
+            elif self.long_shares < shares_to_hold:
+                # Buy more
+                shares_to_buy = shares_to_hold - self.long_shares
+                position_to_buy = shares_to_buy * cost_per_share
+                
+                # Check if I have enough cash to deduct commissions
+                if position_to_buy > self.long_cash:
+                    missing_shares = np.ceil((position_to_buy - self.long_cash) / cost_per_share) # Number of shares that we don't have money for
+                    shares_to_buy -= missing_shares
+                    position_to_buy = shares_to_buy * cost_per_share
+                
+                self.long_cash -= position_to_buy
+                self.long_shares += shares_to_buy
+                 
         self.refresh_portfolio(price = current_price)
             
             
@@ -143,7 +202,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.short_position =  self.short_shares * price
         
         self.long_portfolio_value = self.long_cash + self.long_position
-        self.short_portfolio_value = self.short_cash + self.short_position
+        self.short_portfolio_value = self.short_cash - self.short_position
         self.total_portfolio_value = self.long_portfolio_value + self.short_portfolio_value
             
             

@@ -6,15 +6,15 @@ from stable_baselines3 import PPO, DDPG
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
-from stable_baselines3.common.env_util import make_vec_env  # CAMBIO: Para vectorización
-from stable_baselines3.common.preprocessing import preprocess_obs  # CAMBIO: Para normalización
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.preprocessing import preprocess_obs
 
 # Add the project root directory to the system path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_root)
 
 # Import the hedging environment
-from src.environment.hedging_env import PortfolioHedgingEnv  # Asegúrate de que esta ruta apunte al entorno actualizado
+from src.environment.hedging_env import PortfolioHedgingEnv
 
 def train_hedging_model(
     data_path="data/processed/NVDA_hedging_features.csv",
@@ -30,10 +30,10 @@ def train_hedging_model(
     initial_long_capital=1_000_000,
     initial_short_capital=1_000_000,
     commission=0.00125,
-    max_shares_per_trade=1.0,
     action_change_penalty_threshold=0.1,
+    max_shares_per_trade=0.5,
     algorithm="DDPG",
-    n_envs=4,  # CAMBIO: Número de entornos paralelos para vectorización
+    n_envs=4,
     verbose=True
 ):
     """
@@ -53,8 +53,8 @@ def train_hedging_model(
         initial_long_capital: Initial capital for long positions (1M)
         initial_short_capital: Initial capital for short positions (1M)
         commission: Commission rate for trades
-        max_shares_per_trade: Max percentage of portfolio value to trade in one step
         action_change_penalty_threshold: Threshold for penalizing large action changes
+        max_shares_per_trade: Maximum proportion of portfolio value per trade
         algorithm: RL algorithm to use ("PPO" or "DDPG")
         n_envs: Number of parallel environments for training
         verbose: Whether to print progress messages
@@ -79,7 +79,7 @@ def train_hedging_model(
     
     # Extract prices and features
     prices = df['Close'].astype(np.float32).values
-    if np.any(prices <= 0):  # CAMBIO: Validar precios no negativos
+    if np.any(prices <= 0):
         raise ValueError("Prices contain non-positive values")
     
     # Remove Date and Close from features
@@ -92,7 +92,7 @@ def train_hedging_model(
         print(f"Price data points: {len(prices)}")
         print(f"Date range: {dates[0]} to {dates[-1]}")
     
-    # CAMBIO: Vectorizar el entorno para entrenamiento paralelo
+    # Vectorizar el entorno para entrenamiento paralelo
     def make_env():
         return PortfolioHedgingEnv(
             features=features,
@@ -105,8 +105,8 @@ def train_hedging_model(
             initial_long_capital=initial_long_capital,
             initial_short_capital=initial_short_capital,
             commission=commission,
-            max_shares_per_trade=max_shares_per_trade,
-            action_change_penalty_threshold=action_change_penalty_threshold
+            action_change_penalty_threshold=action_change_penalty_threshold,
+            max_shares_per_trade=max_shares_per_trade
         )
     
     train_env = make_vec_env(lambda: make_env(), n_envs=n_envs, seed=0)
@@ -121,8 +121,8 @@ def train_hedging_model(
         initial_long_capital=initial_long_capital,
         initial_short_capital=initial_short_capital,
         commission=commission,
-        max_shares_per_trade=max_shares_per_trade,
-        action_change_penalty_threshold=action_change_penalty_threshold
+        action_change_penalty_threshold=action_change_penalty_threshold,
+        max_shares_per_trade=max_shares_per_trade
     )
     
     # Configure logging
@@ -136,7 +136,7 @@ def train_hedging_model(
         n_actions = train_env.action_space.shape[-1]
         action_noise = OrnsteinUhlenbeckActionNoise(
             mean=np.zeros(n_actions),
-            sigma=0.2 * np.ones(n_actions)  # CAMBIO: Reducir sigma para menos ruido
+            sigma=0.2 * np.ones(n_actions)
         )
         
         model = DDPG(
@@ -146,14 +146,14 @@ def train_hedging_model(
             verbose=1,
             tensorboard_log=log_dir,
             learning_rate=1e-4,
-            buffer_size=1_000_000,  # CAMBIO: Aumentar buffer para entornos complejos
-            learning_starts=10_000,  # CAMBIO: Más pasos antes de entrenar
-            batch_size=256,  # CAMBIO: Mayor batch size para estabilidad
+            buffer_size=1_000_000,
+            learning_starts=10_000,
+            batch_size=256,
             tau=0.005,
             gamma=0.99,
             train_freq=(1, "episode"),
-            gradient_steps=1,  # CAMBIO: Fijar a 1 para actualizaciones controladas
-            policy_kwargs=dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))  # CAMBIO: Arquitectura más compacta
+            gradient_steps=1,
+            policy_kwargs=dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
         )
         model_prefix = "ddpg_hedging"
         
@@ -167,16 +167,16 @@ def train_hedging_model(
             verbose=1,
             tensorboard_log=log_dir,
             learning_rate=3e-4,
-            n_steps=2048 // n_envs,  # CAMBIO: Ajustar n_steps para entornos paralelos
+            n_steps=2048 // n_envs,
             batch_size=64,
             n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,  # CAMBIO: Añadir entropía para exploración
+            ent_coef=0.01,
             vf_coef=0.5,
             max_grad_norm=0.5,
-            policy_kwargs=dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])  # CAMBIO: Arquitectura más compacta
+            policy_kwargs=dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])
         )
         model_prefix = "ppo_hedging"
     
@@ -184,7 +184,7 @@ def train_hedging_model(
     
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
-        save_freq=max(10_000 // n_envs, 1),  # CAMBIO: Ajustar save_freq para entornos paralelos
+        save_freq=max(10_000 // n_envs, 1),
         save_path=checkpoints_dir,
         name_prefix=model_prefix
     )
@@ -193,7 +193,7 @@ def train_hedging_model(
         eval_env,
         best_model_save_path=best_model_dir,
         log_path=eval_log_dir,
-        eval_freq=max(5_000 // n_envs, 1),  # CAMBIO: Ajustar eval_freq
+        eval_freq=max(5_000 // n_envs, 1),
         n_eval_episodes=10,
         deterministic=True,
         render=False
@@ -230,7 +230,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
     df['Date'] = pd.to_datetime(df['Date'])
     dates = df['Date'].values
     prices = df['Close'].astype(np.float32).values
-    if np.any(prices <= 0):  # CAMBIO: Validar precios no negativos
+    if np.any(prices <= 0):
         raise ValueError("Prices contain non-positive values")
     
     feature_columns = [col for col in df.columns if col not in ['Date', 'Close']]
@@ -248,8 +248,8 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         initial_long_capital=1_000_000,
         initial_short_capital=1_000_000,
         commission=0.00125,
-        max_shares_per_trade=1.0,
-        action_change_penalty_threshold=0.1
+        action_change_penalty_threshold=0.1,
+        max_shares_per_trade=0.5
     )
     
     # Load model
@@ -264,19 +264,19 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         obs, info = env.reset()
         done = False
         step_count = 0
-        total_reward = 0.0  # CAMBIO: Acumular recompensa total
+        total_reward = 0.0
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
-            total_reward += reward  # CAMBIO: Sumar recompensa
+            total_reward += reward
             done = terminated or truncated
             step_count += 1
         
         stats = env.get_episode_stats()
         stats['episode'] = episode
         stats['steps'] = step_count
-        stats['total_reward'] = total_reward  # CAMBIO: Añadir recompensa total
+        stats['total_reward'] = total_reward
         episode_stats.append(stats)
         
         if verbose:

@@ -23,7 +23,7 @@ def train_hedging_model(
     total_timesteps=10_000_000,
     episode_months=6,
     window_size=5,
-    dead_zone=0.02,  
+    dead_zone=0.03,  
     initial_capital=2_000_000,
     commission=0.00125,
     algorithm="PPO",
@@ -184,6 +184,7 @@ def train_hedging_model(
     
     return model
 
+
 def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose=True):
     
     df = pd.read_csv(data_path)
@@ -200,7 +201,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         prices=prices,
         episode_months=6,
         window_size=5,
-        dead_zone=0.01,
+        dead_zone=0.02,
         commission=0.00125,
         initial_capital=2_000_000
     )
@@ -217,35 +218,95 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         obs, info = env.reset()
         done = False
         step_count = 0
-        total_reward = 0.0  
+        total_reward = 0.0
         
+        # Get episode start info
+        start_idx = info['current_index']
+        start_price = prices[start_idx]
+        
+        # DEBUG: Print episode start info
+        if verbose and episode < 3:
+            print(f"\nEpisode {episode+1} DEBUG:")
+            print(f"  Start index: {start_idx}")
+            print(f"  Start price: ${start_price:.2f}")
+            print(f"  Initial portfolio: ${info['portfolio_value']:,.2f}")
+        
+        action_history = []
         while not done:
             action, _ = model.predict(obs, deterministic=True)
+            action_history.append(action[0])
             obs, reward, terminated, truncated, info = env.step(action)
-            total_reward += reward  
+            total_reward += reward
             done = terminated or truncated
             step_count += 1
         
+        # Get final episode info
+        final_idx = start_idx + step_count
+        if final_idx >= len(prices):
+            final_idx = len(prices) - 1
+        final_price = prices[final_idx]
+        
+        # Calculate benchmark (buy-and-hold) return
+        benchmark_return = (final_price - start_price) / start_price
+        
         stats = env.get_episode_stats()
-        stats['episode'] = episode
-        stats['steps'] = step_count
-        stats['total_reward'] = total_reward  
+        stats.update({
+            'episode': episode,
+            'start_idx': start_idx,
+            'start_price': start_price,
+            'final_price': final_price,
+            'steps': step_count,
+            'total_reward': total_reward,
+            'benchmark_return': benchmark_return,
+            'excess_return': stats['total_return'] - benchmark_return,
+            'avg_action': np.mean(action_history),
+            'action_std': np.std(action_history),
+            'min_action': np.min(action_history),
+            'max_action': np.max(action_history)
+        })
+        
         episode_stats.append(stats)
         
         if verbose:
-            print(f"Episode {episode+1}: Return={stats['total_return']*100:.2f}%, "
+            print(f"Episode {episode+1}: "
+                  f"Strategy={stats['total_return']*100:.2f}%, "
+                  f"Benchmark={benchmark_return*100:.2f}%, "
+                  f"Excess={stats['excess_return']*100:.2f}%, "
                   f"Sharpe={stats['sharpe_ratio']:.3f}, "
-                  f"Total Reward={stats['total_reward']:.2f}, ")
-        portfolio = stats["portfolio"]
+                  f"Actions: avg={stats['avg_action']:.3f}, "
+                  f"range=[{stats['min_action']:.3f}, {stats['max_action']:.3f}]")
     
     # Summary statistics
     stats_df = pd.DataFrame(episode_stats)
+    
     if verbose:
-        print("\n=== Summary Statistics ===")
-        print(f"Average Return: {stats_df['total_return'].mean()*100:.2f}% ± {stats_df['total_return'].std()*100:.2f}%")
-        print(f"Average Sharpe Ratio: {stats_df['sharpe_ratio'].mean():.3f} ± {stats_df['sharpe_ratio'].std():.3f}")
-        print(f"Average Total Reward: {stats_df['total_reward'].mean():.2f} ± {stats_df['total_reward'].std():.2f}")
-        print(f"Win Rate: {(stats_df['total_return'] > 0).mean()*100:.1f}%")
+        print("\n" + "="*80)
+        print("PERFORMANCE SUMMARY")
+        print("="*80)
+        print("STRATEGY PERFORMANCE:")
+        print(f"  Average Return: {stats_df['total_return'].mean()*100:.2f}% ± {stats_df['total_return'].std()*100:.2f}%")
+        print(f"  Median Return: {stats_df['total_return'].median()*100:.2f}%")
+        print(f"  Best Episode: {stats_df['total_return'].max()*100:.2f}%")
+        print(f"  Worst Episode: {stats_df['total_return'].min()*100:.2f}%")
+        print(f"  Win Rate: {(stats_df['total_return'] > 0).mean()*100:.1f}%")
+        
+        print("\nBENCHMARK COMPARISON:")
+        print(f"  Benchmark Avg Return: {stats_df['benchmark_return'].mean()*100:.2f}% ± {stats_df['benchmark_return'].std()*100:.2f}%")
+        print(f"  Average Excess Return: {stats_df['excess_return'].mean()*100:.2f}% ± {stats_df['excess_return'].std()*100:.2f}%")
+        print(f"  Outperformance Rate: {(stats_df['excess_return'] > 0).mean()*100:.1f}%")
+        print(f"  Average Outperformance: {stats_df['excess_return'][stats_df['excess_return'] > 0].mean()*100:.2f}%")
+        
+        print("\nRISK METRICS:")
+        print(f"  Average Sharpe Ratio: {stats_df['sharpe_ratio'].mean():.3f} ± {stats_df['sharpe_ratio'].std():.3f}")
+        print(f"  Strategy Volatility: {stats_df['volatility'].mean()*100:.2f}%")
+        
+        print("\nTRADING BEHAVIOR:")
+        print(f"  Average Action: {stats_df['avg_action'].mean():.3f}")
+        print(f"  Action Range: [{stats_df['min_action'].min():.3f}, {stats_df['max_action'].max():.3f}]")
+        print(f"  Average Action Std: {stats_df['action_std'].mean():.3f}")
+        print(f"  Average Reward: {stats_df['total_reward'].mean():.2f} ± {stats_df['total_reward'].std():.2f}")
+        
+        print("="*80)
     
     return stats_df
 

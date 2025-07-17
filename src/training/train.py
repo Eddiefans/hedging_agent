@@ -26,7 +26,6 @@ def train_hedging_model(
     episode_length_months=6,
     window_size=5,
     dead_zone=0.005,
-    initial_portfolio_value=2_000_000,
     initial_long_capital=1_000_000,
     initial_short_capital=1_000_000,
     commission=0.00125,
@@ -49,7 +48,6 @@ def train_hedging_model(
         episode_length_months: Length of each episode in months
         window_size: Observation window size
         dead_zone: Dead zone around action changes
-        initial_portfolio_value: Initial portfolio value (2M)
         initial_long_capital: Initial capital for long positions (1M)
         initial_short_capital: Initial capital for short positions (1M)
         commission: Commission rate for trades
@@ -101,7 +99,6 @@ def train_hedging_model(
             episode_length_months=episode_length_months,
             window_size=window_size,
             dead_zone=dead_zone,
-            initial_portfolio_value=initial_portfolio_value,
             initial_long_capital=initial_long_capital,
             initial_short_capital=initial_short_capital,
             commission=commission,
@@ -117,7 +114,6 @@ def train_hedging_model(
         episode_length_months=episode_length_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        initial_portfolio_value=initial_portfolio_value,
         initial_long_capital=initial_long_capital,
         initial_short_capital=initial_short_capital,
         commission=commission,
@@ -203,7 +199,7 @@ def train_hedging_model(
     if verbose:
         print(f"Training {algorithm} for {total_timesteps} timesteps...")
         print(f"Episode length: {episode_length_months} months")
-        print(f"Portfolio value: ${initial_portfolio_value:,}")
+        print(f"Portfolio value: ${initial_long_capital + initial_short_capital:,}")
         print(f"Dead zone: ±{dead_zone*100:.1f}%")
         print(f"Action change penalty threshold: {action_change_penalty_threshold:.2f}")
     
@@ -312,7 +308,7 @@ if __name__ == "__main__":
                         help='Episode length in months')
     parser.add_argument('--evaluate', action='store_true',
                         help='Evaluate existing model instead of training')
-    parser.add_argument('--model_path', default="models/best_model/ddpg_hedging_best_model",
+    parser.add_argument('--model_path', default="models/best_model/best_model",
                         help='Path to model for evaluation')
     
     args = parser.parse_args()

@@ -4,11 +4,21 @@ from gymnasium import spaces  # Added import for spaces module
 import pandas as pd
 
 class PortfolioHedgingEnv(gym.Env):
-    def __init__(self, features: np.ndarray, prices: np.ndarray, dates: np.ndarray = None,
-                 episode_length_months=6, window_size=5, dead_zone=0.005,
-                 initial_portfolio_value=2_000_000, initial_long_capital=1_000_000,
-                 initial_short_capital=1_000_000, commission=0.00125,
-                 action_change_penalty_threshold=0.1, max_shares_per_trade=0.5):
+    def __init__(
+        self, 
+        features: np.ndarray, 
+        prices: np.ndarray, 
+        dates: np.ndarray = None,
+        episode_length_months=6,
+        window_size=5,
+        dead_zone=0.005,
+        initial_long_capital=1_000_000,
+        initial_short_capital=1_000_000,
+        commission=0.00125,
+        action_change_penalty_threshold=0.1,
+        max_shares_per_trade=0.5
+    ):
+        
         # Initialize the environment with input data and parameters
         super().__init__()
         
@@ -16,7 +26,6 @@ class PortfolioHedgingEnv(gym.Env):
         assert len(features) == len(prices), "Features and prices must have the same length"
         assert len(features) > window_size, f"Features length ({len(features)}) must be greater than window_size ({window_size})"
         assert all(prices >= 0), "Prices must be non-negative"
-        assert initial_portfolio_value > 0, "Initial portfolio value must be positive"
         assert initial_long_capital > 0 and initial_short_capital > 0, "Initial capitals must be positive"
         assert 0 <= commission <= 1, "Commission must be between 0 and 1"
         assert 0 < max_shares_per_trade <= 1, "max_shares_per_trade must be between 0 and 1"
@@ -27,7 +36,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.dates = pd.to_datetime(dates) if dates is not None else np.arange(len(prices))
         self.window_size = window_size
         self.dead_zone = dead_zone
-        self.initial_portfolio_value = initial_portfolio_value
+        self.initial_portfolio_value = initial_long_capital + initial_short_capital
         self.initial_long_capital = initial_long_capital
         self.initial_short_capital = initial_short_capital
         self.commission = commission
@@ -49,13 +58,15 @@ class PortfolioHedgingEnv(gym.Env):
         )
 
         # Initialize state variables
+        
+        initial_price = prices[0]  # Use first price as initial reference
+        
         self.current_episode_start = 0
         self.current_step = 0
         self.episode_done = False
-        initial_price = prices[0]  # Use first price as initial reference
         self.current_long_shares = self.initial_long_capital / initial_price  # Initial long position
         self.current_short_shares = 0.0  # No initial short positions
-        self.cash = self.initial_portfolio_value - (self.initial_long_capital / initial_price * initial_price)
+        self.cash = self.initial_short_capital
         self.current_portfolio_value = 0.0
         self.last_action = 0.0
         self.portfolio_history = []
@@ -66,11 +77,12 @@ class PortfolioHedgingEnv(gym.Env):
         self.reset()
 
     def _get_observation(self):
+        
         # Get current observation based on market features and portfolio state
         current_idx = self.current_episode_start + self.current_step
         end_idx = current_idx + self.window_size
 
-        # Handle edge case where window exceeds data length
+        # Fill with padding if there is not enough data to cover the range [current_idx:end_idx]
         if end_idx > len(self.features):
             valid_idx = len(self.features) - 1
             obs_window = self.features[current_idx:valid_idx + 1]
@@ -84,7 +96,6 @@ class PortfolioHedgingEnv(gym.Env):
         market_features = market_features.flatten()
 
         # Get current price and portfolio state
-        current_price = self.prices[min(current_idx, len(self.prices) - 1)]
         portfolio_state = np.array([
             self.current_long_shares,
             self.current_short_shares,
@@ -95,28 +106,32 @@ class PortfolioHedgingEnv(gym.Env):
         return np.concatenate((market_features, portfolio_state))
 
     def _calculate_portfolio_value(self, current_price):
+        
         # Calculate current portfolio value based on long and short positions
         long_value = self.current_long_shares * current_price
         short_value = self.current_short_shares * current_price
         return self.cash + long_value - short_value
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None):
         # Reset the environment to a new episode
         super().reset(seed=seed)
+        
+        initial_price = self.prices[self.current_episode_start]
+        
         self.np_random = np.random.default_rng(seed)
         self.current_episode_start = self.np_random.integers(self.min_start_idx, self.max_start_idx)
         self.current_step = 0
         self.episode_done = False
-        initial_price = self.prices[self.current_episode_start]
         self.current_long_shares = self.initial_long_capital / initial_price  # Fully invest initial long capital
         self.current_short_shares = 0.0  # No short positions at start
-        self.cash = self.initial_portfolio_value - (self.initial_long_capital / initial_price * initial_price)
+        self.cash = self.initial_short_capital
         self.current_portfolio_value = self._calculate_portfolio_value(initial_price)
         self.last_action = 1.0  # Start with neutral action value
         self.portfolio_history = [self.current_portfolio_value]
         self.action_history = [self.last_action]
         self.price_history = [initial_price]
         self.returns_history = []
+        
         return self._get_observation(), self._get_info()
 
     def step(self, action):
@@ -130,19 +145,15 @@ class PortfolioHedgingEnv(gym.Env):
         prev_value = self.current_portfolio_value
 
         # Determine target shares based on action value
-        if 0.0 <= action_value < 1.0:
-            reduction_factor = 1.0 - action_value
-            target_long_shares = (self.initial_long_capital * (1.0 - reduction_factor)) / current_price
+        if 0.0 <= action_value <= 1.0:
+            
+            target_long_shares = (self.initial_long_capital * action_value) / current_price
             target_short_shares = 0.0
-        elif action_value == 1.0:
-            target_long_shares = self.initial_long_capital / current_price
-            target_short_shares = 0.0
-        elif 1.0 < action_value <= 2.0:
+            
+        else:
+            
             target_long_shares = self.initial_long_capital / current_price
             target_short_shares = (action_value - 1.0) * self.initial_short_capital / current_price
-        else:
-            target_long_shares = self.current_long_shares
-            target_short_shares = self.current_short_shares
 
         # Calculate shares to execute with maximum limit
         current_total = self.current_long_shares + self.current_short_shares
@@ -154,32 +165,25 @@ class PortfolioHedgingEnv(gym.Env):
         if (abs(action_value - self.last_action) < self.dead_zone or 
             abs(shares_to_execute * current_price) < self.dead_zone * self.current_portfolio_value):
             shares_to_execute = 0.0
-            commission_cost = 0.0
-        else:
-            long_change = target_long_shares - self.current_long_shares
-            short_change = target_short_shares - self.current_short_shares
-            commission_cost = (abs(long_change) + abs(short_change)) * current_price * self.commission
-            self.cash -= commission_cost
 
         # Execute trades
         if shares_to_execute > 0:
+            
             long_increase = min(max(0, target_long_shares - self.current_long_shares), max_shares)
             short_increase = min(max(0, target_short_shares - self.current_short_shares), max_shares - long_increase)
             self.current_long_shares += long_increase
-            self.current_short_shares += short_increase
-            self.cash -= (long_increase * current_price * (1 + self.commission) - 
-                         short_increase * current_price * (1 - self.commission))
+            self.current_short_shares += short_increase 
+            self.cash += (short_increase - long_increase) * current_price * (1 - self.commission)
+            
         elif shares_to_execute < 0:
+            
             abs_execute = abs(shares_to_execute)
             short_decrease = min(abs_execute, self.current_short_shares)
             long_decrease = min(abs_execute - short_decrease, self.current_long_shares) if abs_execute > short_decrease else 0
             self.current_short_shares -= short_decrease
             self.current_long_shares -= long_decrease
-            self.cash += (short_decrease + long_decrease) * current_price * (1 - self.commission)
+            self.cash += (long_decrease - short_decrease) * current_price * (1 - self.commission)
 
-        # Ensure non-negative shares
-        self.current_long_shares = max(0.0, self.current_long_shares)
-        self.current_short_shares = max(0.0, self.current_short_shares)
         self.current_step += 1
 
         # Check if episode is done
@@ -190,7 +194,8 @@ class PortfolioHedgingEnv(gym.Env):
         next_price = np.mean(self.prices[max(0, current_idx - 3):current_idx + 3]) if not self.episode_done else current_price
         self.current_portfolio_value = self._calculate_portfolio_value(next_price)
         step_return = (self.current_portfolio_value - prev_value) / prev_value if prev_value else 0
-        reward = self._calculate_reward(step_return, action_value, shares_to_execute)
+        self.last_action = self.action_history[-1]
+        reward = self._calculate_reward(step_return, action_value)
 
         # Update history
         self.portfolio_history.append(self.current_portfolio_value)
@@ -200,7 +205,7 @@ class PortfolioHedgingEnv(gym.Env):
 
         return self._get_observation(), reward, self.episode_done, False, self._get_info()
 
-    def _calculate_reward(self, step_return, current_action_value, shares_to_execute):
+    def _calculate_reward(self, step_return, current_action_value):
         # Base reward calculated as a scaled step return
         reward = step_return * 100.0
         

@@ -39,9 +39,9 @@ class PortfolioHedgingEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf, 
             high=np.inf, 
-            shape=(self.window_size, self.features.shape[1]  + 4), # + 4 for additional portfolio state variables: current_long_sahres, current_short_shares, cash, portfolio_value 
+            shape=(self.window_size * self.features.shape[1] + 5,), # Flattened window + 5 stats
             dtype=np.float32
-        )      
+        )
         
         self.min_start_index = self.window_size
         self.max_start_index = len(self.prices) - self.episode_days - 1
@@ -274,40 +274,23 @@ class PortfolioHedgingEnv(gym.Env):
         start_index = self.current_index - self.window_size + 1
         end_index = self.current_index
         
+        # Get features window and flatten it
         features_window = self.features[start_index:end_index + 1]
-        # features_window = (features_window - features_window.mean(axis=0)) / (features_window.std(axis=0) + 1e-8)
+        flattened_features = features_window.flatten()
         
-        if len(self.historical_portfolio) >= self.window_size:
-            stats_window = np.column_stack([
-                self.historical_portfolio[-self.window_size:],
-                self.historical_long_shares[-self.window_size:],
-                self.historical_short_shares[-self.window_size:],
-                self.historical_cash[-self.window_size:]
-            ])
-        else:
-            stats_window = np.column_stack([
-                self.historical_portfolio,
-                self.historical_long_shares,
-                self.historical_short_shares,
-                self.historical_cash
-            ])
-            padding = np.array([[
-                    self.historical_portfolio[0], 
-                    self.historical_long_shares[0], 
-                    self.historical_short_shares[0], 
-                    self.historical_cash[0]
-                ]] * (self.window_size - len(self.historical_portfolio)), 
-                dtype=np.float32
-            )
-            stats_window = np.vstack((padding, stats_window))
+        # Get current stats (5 values: portfolio, long_shares, short_shares, cash, last_action)
+        current_stats = np.array([
+            self.total_portfolio_value,
+            self.long_shares,
+            self.short_shares,
+            self.total_cash,
+            self.historical_actions[-1] if self.historical_actions else 1.0
+        ], dtype=np.float32)
         
-        obs = np.hstack((
-            features_window,
-            stats_window
-        ))
+        # Concatenate flattened features + stats
+        obs = np.concatenate([flattened_features, current_stats])
         
-        obs = obs.astype(np.float32)
-        return obs
+        return obs.astype(np.float32)
     
     def _get_info(self) -> dict:
         index = self.current_index
@@ -328,11 +311,29 @@ class PortfolioHedgingEnv(gym.Env):
     
     def get_episode_stats(self):
         
+        risk_free_rate = 0.0823 # TIE 17 Jul 2025
+        daily_risk_free_rate = risk_free_rate / 252 # 252 trading days in a year
+        
         returns = np.array(self.historical_returns)
+        portfolio_values = np.array(self.historical_portfolio)
         
         total_return = (self.historical_portfolio[-1] - self.historical_portfolio[0]) / self.historical_portfolio[0]
         volatility = returns.std() if len(returns) > 1 else 0.0
-        sharpe_ratio = (returns.mean() / volatility) if volatility > 0 else 0.0
+        sharpe_ratio = (returns.mean() - daily_risk_free_rate) / volatility if volatility > 0 else 0.0
+        
+        # Downside deviation (target = risk free rate)
+        target_return = daily_risk_free_rate  # or use risk_free_rate/252 for daily
+        downside_returns = np.minimum(returns - target_return, 0.0)  # Only negative deviations
+        downside_deviation = np.sqrt(np.mean(downside_returns**2)) if len(returns) > 1 else 0.0
+        
+        # Sortino ratio
+        sortino_ratio = (returns.mean() - target_return) / downside_deviation if downside_deviation > 0 else 0.0
+        
+        # Max drawdown
+        peak = np.maximum.accumulate(portfolio_values)
+        drawdown = (portfolio_values - peak) / peak
+        max_drawdown = np.abs(drawdown.min()) if len(drawdown) > 0 else 0.0
+        
         num_trades = sum(1 for i in range(1, len(self.historical_long_shares))
                          if abs(self.historical_long_shares[i] - self.historical_long_shares[i-1]) > 1e-6 or \
                             abs(self.historical_short_shares[i] - self.historical_short_shares[i-1]) > 1e-6)
@@ -342,13 +343,14 @@ class PortfolioHedgingEnv(gym.Env):
             "volatility": volatility,
             "sharpe_ratio": sharpe_ratio,
             "num_trades": num_trades,
+            "max_drawdown": max_drawdown, 
+            "sortino_ratio": sortino_ratio,
             "final_portfolio_value": self.historical_portfolio[-1],
             "portfolio": self.historical_portfolio,
             "final_cash": self.total_cash,
             "final_long_shares": self.long_shares,
             "final_short_shares": self.short_shares
         }
-
 
 
     def render(self) -> None:

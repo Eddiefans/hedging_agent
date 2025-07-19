@@ -66,7 +66,7 @@ portfolio_hedging/
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/portfolio_hedging.git
+git clone https://github.com/Eddiefans/hedging_agent
 cd portfolio_hedging
 
 # Create virtual environment
@@ -229,9 +229,9 @@ This framework supports research in:
 ```bibtex
 @software{portfolio_hedging_rl,
   title={Deep Reinforcement Learning for Portfolio Hedging},
-  author={Your Name},
+  author={Eddie Aguilar, Roberto Beltran},
   year={2025},
-  url={https://github.com/yourusername/portfolio_hedging}
+  url={https://github.com/Eddiefans/hedging_agent}
 }
 ```
 

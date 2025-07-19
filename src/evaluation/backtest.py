@@ -167,7 +167,7 @@ def run_backtest(
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated 
-            current_episode_length_actual += 1 # Incrementa el contador de pasos reales
+            current_episode_length_actual += 1
             
         # Obtener estadísticas del agente para el episodio actual
         agent_episode_stats = env.get_episode_stats()

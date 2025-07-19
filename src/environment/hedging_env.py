@@ -53,7 +53,7 @@ class PortfolioHedgingEnv(gym.Env):
         if self.max_start_idx < self.min_start_idx:
             raise ValueError(f"Not enough data for specified episode length ({self.episode_length} days) and window size ({self.window_size}). Total data points: {len(self.prices)}. Need at least {self.window_size + self.episode_length} data points.")
 
-        # --- Action Space de 2 dimensiones ---
+        # ---Action Space de 2 dimensiones---
         # action[0]: Target % of initial_long_capital for long position (0.0 to 1.0)
         # action[1]: Target % of initial_short_capital for short position (0.0 to 1.0)
         self.action_space = spaces.Box(low=0.0, high=1.0, shape=(2,), dtype=np.float32)

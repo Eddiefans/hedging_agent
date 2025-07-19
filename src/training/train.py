@@ -134,7 +134,7 @@ def train_hedging_model(
         n_actions = train_env.action_space.shape[0] # Usa shape[0] para obtener la dimensión
         action_noise = OrnsteinUhlenbeckActionNoise(
             mean=np.zeros(n_actions),
-            sigma=0.2 * np.ones(n_actions) # Sigma también debe ser un array de 2 dimensiones
+            sigma=0.2 * np.ones(n_actions)
         )
         
         model = DDPG(

@@ -230,6 +230,7 @@ This framework supports research in:
 @software{portfolio_hedging_rl,
   title={Deep Reinforcement Learning for Portfolio Hedging},
   author={Eddie Aguilar, Roberto Beltran},
+  school={Instituto Tecnológico y de Estudios Superiores de Occidente (ITESO)},
   year={2025},
   url={https://github.com/Eddiefans/hedging_agent}
 }
@@ -237,7 +238,8 @@ This framework supports research in:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the LICENSE file for details. 
+Developed as part of the Financial Engineering graduation requirements at ITESO University.
 
 ## Acknowledgments
 

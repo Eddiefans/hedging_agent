@@ -7,15 +7,12 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
 from stable_baselines3.common.env_util import make_vec_env
-# No necesitamos preprocess_obs aquí, ya que el entorno se encarga de la normalización
-# from stable_baselines3.common.preprocessing import preprocess_obs 
 
 # Add the project root directory to the system path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_root)
 
 # Import the hedging environment
-# Asegúrate de que 'src.environment.hedging_env' apunte al archivo donde está tu clase PortfolioHedgingEnv
 from src.environment.hedging_env import PortfolioHedgingEnv
 
 def train_hedging_model(
@@ -133,7 +130,6 @@ def train_hedging_model(
         if verbose:
             print("Using DDPG (Deep Deterministic Policy Gradient) for continuous hedging control...")
         
-        # --- AJUSTE CLAVE: action_noise para DDPG ---
         # El action_space ahora es de 2 dimensiones, así que el ruido debe coincidir
         n_actions = train_env.action_space.shape[0] # Usa shape[0] para obtener la dimensión
         action_noise = OrnsteinUhlenbeckActionNoise(
@@ -169,9 +165,7 @@ def train_hedging_model(
             verbose=1,
             tensorboard_log=log_dir,
             learning_rate=1e-4,
-            n_steps=2048 // n_envs, # Considera ajustar si n_envs es muy grande, o poner 2048 // n_envs * n_envs
-                          # para asegurar que n_steps sea múltiplo de n_envs.
-                          # Sin embargo, Stable Baselines3 lo maneja internamente en make_vec_env si no es exacto.
+            n_steps=2048 // n_envs,
             batch_size=64,
             n_epochs=10,
             gamma=0.999,
@@ -248,10 +242,7 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         dates=dates,
         episode_length_months=6,
         window_size=5,
-        dead_zone=0.01,
-        # --- AJUSTE CLAVE: Eliminar initial_portfolio_value ---
-        # Este parámetro ya no es necesario en el constructor del entorno
-        # initial_portfolio_value=2_000_000, 
+        dead_zone=0.01, 
         initial_long_capital=1_000_000,
         initial_short_capital=1_000_000,
         commission=0.00125,
@@ -275,7 +266,6 @@ def evaluate_model_sample_episodes(model_path, data_path, n_episodes=10, verbose
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
-            # Asegúrate de que la acción sea un array NumPy si el modelo la devuelve como una lista o tupla
             action = np.array(action) 
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward

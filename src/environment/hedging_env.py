@@ -262,10 +262,8 @@ class PortfolioHedgingEnv(gym.Env):
     
     def _calculate_reward(self, step_return: float, diff_action: float) -> float:
     
-        reward = step_return * 5.0
-        
-        if step_return > 0:
-            reward += 0.1
+        total_return = (self.historical_portfolio[-1] - self.historical_portfolio[0]) / self.historical_portfolio[0]
+        reward = total_return * 5.0
         
         return reward
     
@@ -312,17 +310,40 @@ class PortfolioHedgingEnv(gym.Env):
     def get_episode_stats(self):
         
         risk_free_rate = 0.0823 # TIE 17 Jul 2025
-        daily_risk_free_rate = risk_free_rate / 252 # 252 trading days in a year
+        daily_risk_free_rate = (1 + risk_free_rate) ** (1/252) - 1 # 252 trading days in a year
+        
+        target_return = daily_risk_free_rate 
         
         returns = np.array(self.historical_returns)
         portfolio_values = np.array(self.historical_portfolio)
         
         total_return = (self.historical_portfolio[-1] - self.historical_portfolio[0]) / self.historical_portfolio[0]
+        periods_per_year = 12 / self.episode_months
+        annualized_return = (1 + total_return ) ** periods_per_year - 1
+        
+        benchmark_return = (self.prices[self.current_index] - self.prices[self.start_index]) / self.prices[self.start_index]
+        annualized_benchmark_return = (1 + total_return ) ** periods_per_year - 1
+        
+        # Benchmark calculations
+        benchmark_prices = self.prices[self.start_index:self.current_index+1]
+        benchmark_returns = np.diff(benchmark_prices) / benchmark_prices[:-1]  # Daily returns
+        benchmark_volatility = benchmark_returns.std() if len(benchmark_returns) > 1 else 0.0
+        benchmark_sharpe_ratio = (benchmark_returns.mean() - daily_risk_free_rate) / benchmark_volatility if benchmark_volatility > 0 else 0.0
+        
+        # Benchmark Sortino
+        benchmark_downside_returns = np.minimum(benchmark_returns - target_return, 0.0)
+        benchmark_downside_deviation = np.sqrt(np.mean(benchmark_downside_returns**2)) if len(benchmark_returns) > 1 else 0.0
+        benchmark_sortino_ratio = (benchmark_returns.mean() - target_return) / benchmark_downside_deviation if benchmark_downside_deviation > 0 else 0.0
+        
+        # Benchmark Max Drawdown
+        benchmark_peak = np.maximum.accumulate(benchmark_prices)
+        benchmark_drawdown = (benchmark_prices - benchmark_peak) / benchmark_peak
+        benchmark_max_drawdown = np.abs(benchmark_drawdown.min()) if len(benchmark_drawdown) > 0 else 0.0
+        
         volatility = returns.std() if len(returns) > 1 else 0.0
         sharpe_ratio = (returns.mean() - daily_risk_free_rate) / volatility if volatility > 0 else 0.0
         
         # Downside deviation (target = risk free rate)
-        target_return = daily_risk_free_rate  # or use risk_free_rate/252 for daily
         downside_returns = np.minimum(returns - target_return, 0.0)  # Only negative deviations
         downside_deviation = np.sqrt(np.mean(downside_returns**2)) if len(returns) > 1 else 0.0
         
@@ -340,13 +361,19 @@ class PortfolioHedgingEnv(gym.Env):
         
         return {
             "total_return": total_return,
+            "annualized_return": annualized_return,
+            "benchmark_return": benchmark_return, 
+            "annualized_benchmark_return": annualized_benchmark_return,
+            "benchmark_sharpe_ratio": benchmark_sharpe_ratio, 
+            "benchmark_sortino_ratio": benchmark_sortino_ratio, 
+            "benchmark_max_drawdown": benchmark_max_drawdown, 
+            "benchmark_volatility": benchmark_volatility,
             "volatility": volatility,
             "sharpe_ratio": sharpe_ratio,
             "num_trades": num_trades,
             "max_drawdown": max_drawdown, 
             "sortino_ratio": sortino_ratio,
             "final_portfolio_value": self.historical_portfolio[-1],
-            "portfolio": self.historical_portfolio,
             "final_cash": self.total_cash,
             "final_long_shares": self.long_shares,
             "final_short_shares": self.short_shares

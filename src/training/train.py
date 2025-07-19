@@ -5,7 +5,8 @@ import numpy as np
 from stable_baselines3 import PPO, DDPG
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
-from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise, NormalActionNoise
+from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
+from stable_baselines3.common.env_util import make_vec_env
 
 # Add the project root directory to the system path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -20,17 +21,42 @@ def train_hedging_model(
     checkpoints_dir="checkpoints",
     best_model_dir="models/best_model",
     eval_log_dir="logs/evaluation",
-    total_timesteps=10_000_000,
+    total_timesteps=5_000_000,
     episode_months=6,
     window_size=5,
-    dead_zone=0.03,  
+    dead_zone=0.01,  
     initial_capital=2_000_000,
     commission=0.00125,
+    action_change_penalty_threshold=0.2,
+    max_shares_per_trade=0.5,
     algorithm="PPO",
     verbose=True,
-    use_curriculum=True
+    n_envs=4
 ):
+    """
+    Train a reinforcement learning agent for portfolio hedging.
     
+    Args:
+        data_path: Path to the processed dataset
+        log_dir: Directory for TensorBoard logs
+        checkpoints_dir: Directory for model checkpoints
+        best_model_dir: Directory to save the best model
+        eval_log_dir: Directory for evaluation logs
+        total_timesteps: Total number of timesteps to train for
+        episode_length_months: Length of each episode in months
+        window_size: Observation window size
+        dead_zone: Dead zone around action changes
+        initial_capital: Initial capital for portfolio 
+        commission: Commission rate for trades
+        action_change_penalty_threshold: Threshold for penalizing large action changes
+        max_shares_per_trade: Maximum proportion of portfolio value per trade
+        algorithm: RL algorithm to use ("PPO" or "DDPG")
+        n_envs: Number of parallel environments for training
+        verbose: Whether to print progress messages
+    
+    Returns:
+        model: Trained RL model
+    """
     # Create directories if they don't exist
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(checkpoints_dir, exist_ok=True)
@@ -62,31 +88,35 @@ def train_hedging_model(
         print(f"Date range: {dates[0]} to {dates[-1]}")
         print(f"Dead zone: ±{dead_zone*100}%")
     
-    # Create environments using the NEW environment
-    train_env = PortfolioHedgingEnv(
-        features=features,
-        prices=prices,
-        episode_months=episode_months,
-        window_size=window_size,
-        dead_zone=dead_zone,
-        commission=commission,
-        initial_capital=initial_capital,
-        curriculum_stage="bull" # Start with bull markets
-    )
+    def make_env():
+        return PortfolioHedgingEnv(
+            features=features,
+            prices=prices,
+            dates=dates,
+            episode_months=episode_months,
+            window_size=window_size,
+            dead_zone=dead_zone,
+            initial_capital=initial_capital,
+            commission=commission,
+            action_change_penalty_threshold=action_change_penalty_threshold,
+            max_shares_per_trade=max_shares_per_trade
+        )
+    
+    train_env = make_vec_env(lambda: make_env(), n_envs=n_envs, seed=0)
     
     eval_env = PortfolioHedgingEnv(
         features=features,
         prices=prices,
+        dates=dates,
         episode_months=episode_months,
         window_size=window_size,
         dead_zone=dead_zone,
-        commission=commission,
         initial_capital=initial_capital,
-        curriculum_stage="random"  # Always random
+        commission=commission,
+        action_change_penalty_threshold=action_change_penalty_threshold,
+        max_shares_per_trade=max_shares_per_trade
     )
     
-    train_env._setup_feature_indices(feature_columns)
-    eval_env._setup_feature_indices(feature_columns)
     
     # Configure logging
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
@@ -97,8 +127,7 @@ def train_hedging_model(
         if verbose:
             print("Using DDPG (Deep Deterministic Policy Gradient) for continuous hedging control...")
         
-        n_actions = train_env.action_space.shape[-1]
-        # action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
+        n_actions = train_env.action_space.shape[0]
         action_noise = OrnsteinUhlenbeckActionNoise(
             mean=np.zeros(n_actions),
             sigma=0.2 * np.ones(n_actions)  
@@ -119,9 +148,6 @@ def train_hedging_model(
             train_freq=(1, "episode"),
             gradient_steps=1,
             policy_kwargs=dict(net_arch=dict(pi=[256, 256], qf=[256, 256]))
-            # ent_coef='auto',
-            # target_update_interval=1,
-            # target_entropy='auto'
         )
         model_prefix = "ddpg_hedging"
         
@@ -134,15 +160,14 @@ def train_hedging_model(
             train_env,
             verbose=1,
             tensorboard_log=log_dir,
-            learning_rate=3e-4,
-            n_steps=2048,
+            learning_rate=1e-4,
+            n_steps=2048 // n_envs,
             batch_size=64,
             n_epochs=10,
-            gamma=0.99,
+            gamma=0.999,
             gae_lambda=0.95,
             clip_range=0.2,
-            # clip_range_vf=None,
-            ent_coef=0.01,
+            ent_coef=0.02,
             vf_coef=0.5,
             max_grad_norm=0.5,
             policy_kwargs=dict(net_arch=[dict(pi=[256, 256], vf=[256, 256])])
@@ -152,34 +177,21 @@ def train_hedging_model(
     model.set_logger(new_logger)
     
     # Set up callbacks
-    callbacks = [
-        CheckpointCallback(
-            save_freq=10_000,
-            save_path=checkpoints_dir,
-            name_prefix=model_prefix
-        ),
-        EvalCallback(
-            eval_env,
-            best_model_save_path=best_model_dir,
-            log_path=eval_log_dir,
-            eval_freq=5_000,
-            n_eval_episodes=10,
-            deterministic=True,
-            render=False
-        )
-    ]
+    checkpoint_callback = CheckpointCallback(
+        save_freq=max(10_000 // n_envs, 1),
+        save_path=checkpoints_dir,
+        name_prefix=model_prefix
+    )
     
-    
-    if use_curriculum:
-        from src.training.curriculum_callback import CurriculumCallback
-        curriculum_callback = CurriculumCallback(
-            total_timesteps=total_timesteps,  
-            stage_proportions=[0.01, 0.01, 0.02, 0.96],  
-            stage_names=["bull", "bear", "mixed", "random"],
-            verbose=verbose
-        )
-        callbacks.append(curriculum_callback)
-        
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path=best_model_dir,
+        log_path=eval_log_dir,
+        eval_freq=max(5_000 // n_envs, 1),
+        n_eval_episodes=10,
+        deterministic=True,
+        render=False
+    )
     
     
     # Train model
@@ -188,12 +200,12 @@ def train_hedging_model(
         print(f"Episode length: {episode_months} months")
         print(f"Portfolio value: ${initial_capital:,}")
         print(f"Dead zone: ±{dead_zone*100:.1f}%")
-        print(f"Action space: [0.0 = no holdings, 1.0 = max long (no hedging), 2.0 = max long with max hedging]")
+        print(f"Action change penalty threshold: {action_change_penalty_threshold:.2f}")
     
     model.learn(
         total_timesteps=total_timesteps,
-        callback=callbacks,
-        tb_log_name=f"{model_prefix}_curriculum" if use_curriculum else f"{model_prefix}_run"
+        callback=[checkpoint_callback, eval_callback],
+        tb_log_name=f"{model_prefix}_run"
     )
     
     # Save final model
@@ -220,7 +232,6 @@ if __name__ == "__main__":
                        help='Episode length in months')
     parser.add_argument('--model_path', default="models/best_model/best_model",
                         help='Path to model for evaluation')
-    parser.add_argument('--no-curriculum', action='store_false', dest='curriculum', help='Disable curriculum learning (enabled by default)')
     
     args = parser.parse_args()
     
@@ -229,6 +240,5 @@ if __name__ == "__main__":
         data_path=args.data_path,
         total_timesteps=args.timesteps,
         episode_months=args.episode_months,
-        algorithm=args.algorithm,
-        use_curriculum=args.curriculum
+        algorithm=args.algorithm
     )

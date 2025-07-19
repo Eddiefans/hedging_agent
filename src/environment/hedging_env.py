@@ -9,72 +9,76 @@ class PortfolioHedgingEnv(gym.Env):
         self, 
         features: np.ndarray, 
         prices: np.ndarray, 
+        dates: np.ndarray = None,
         episode_months: int = 6, 
         window_size: int = 5, 
-        dead_zone: float = 0.03, 
+        dead_zone: float = 0.01, 
         commission: float = 0.00125, 
         initial_capital: float = 2_000_000.0,
         render_mode: str | None = "human",
-        curriculum_stage: str = "random"
+        action_change_penalty_threshold=0.2,
+        max_shares_per_trade=0.5 
     ):
         super().__init__()
         
-        if len(features) != len(prices):
-            raise ValueError("Features and prices must have the same length. Your features length is {}, and prices length is {}.".format(len(features), len(prices)))
-        
+        # Validate input data and parameters
+        assert len(features) == len(prices), "Features and prices must have the same length"
         assert len(features) > window_size, f"Features length ({len(features)}) must be greater than window_size ({window_size})"
-        assert all(prices >= 0), "Prices must be non-negative"
+        assert np.all(prices >= 0), "Prices must be non-negative"
+        assert initial_capital >= 0, "Initial capital must be positive or zero"
+        assert 0 <= commission <= 1, "Commission must be between 0 and 1"
+        assert 0 < max_shares_per_trade <= 1, "max_shares_per_trade must be between 0 and 1"
+        assert dead_zone >= 0, "Dead zone must be non-negative"
         
+        # Store environment parameters
         self.features = features
         self.prices = prices
+        self.dates = pd.to_datetime(dates) if dates is not None else np.arange(len(prices))
         self.episode_months = episode_months
         self.window_size = window_size
         self.dead_zone = dead_zone
         self.commission = commission
         self.initial_capital = initial_capital
+        self.initial_long_capital = initial_capital / 2
+        self.initial_short_capital = initial_capital / 2
+        self.action_change_penalty_threshold = action_change_penalty_threshold
+        self.max_shares_per_trade = max_shares_per_trade
         self.render_mode = render_mode
         
         self.episode_days = episode_months * 21 # Assuming 21 trading days per month
         
-        self.action_space = spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32)
+        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(2,), dtype=np.float32)
+        
+        num_features = features.shape[1]
         self.observation_space = spaces.Box(
-            low=-np.inf, 
-            high=np.inf, 
-            shape=(self.window_size * self.features.shape[1] + 5 + 6,), # Flattened window + 5 stats + 6 market context
+            low=-np.inf, high=np.inf,
+            shape=(window_size * num_features + 4,), 
             dtype=np.float32
         )
         
-        self._setup_feature_indices()
-        
         self.min_start_index = self.window_size
-        self.max_start_index = len(self.prices) - self.episode_days - 1
+        self.max_start_index = len(features) - self.episode_days - 1
         if self.min_start_index > self.max_start_index:
             raise ValueError("The length of the prices array is too short for {} months episode and window size of {}.".format(episode_months, window_size))
         
-        self.start_index = None
-        self.current_index = None
+        self.current_episode_start = 0
+        self.current_step = 0
         self.episode_done = False
         
-        self.total_cash = self.initial_capital
-        self.long_cash = self.total_cash / 2
-        self.short_cash = self.total_cash / 2
-        
-        self.long_shares = 0
-        self.short_shares = 0
-        
-        self.curriculum_stage = curriculum_stage
-        self.curriculum_episodes = []  
-        self._prepare_curriculum_episodes()  
-        
-        self.refresh_portfolio(price = 0.0)
-        
+        self.current_long_shares = 0.0
+        self.current_short_shares = 0.0
+        self.cash = 0.0
+        self.current_portfolio_value = 0.0
+        self.last_action = np.array([1.0, 0.0], dtype=np.float32)
         
         self.historical_portfolio = []
         self.historical_long_shares = []
         self.historical_short_shares = []
         self.historical_cash = []
+        self.historical_prices = []
         self.historical_actions = []
         self.historical_returns = []
+        self.np_random = None 
         
         self.reset()
         
@@ -82,158 +86,29 @@ class PortfolioHedgingEnv(gym.Env):
     def reset(self, seed: int | None = None):
         super().reset(seed=seed)
         
-        if self.curriculum_episodes:
-            episode_idx = self.np_random.choice(len(self.curriculum_episodes))
-            self.start_index = self.curriculum_episodes[episode_idx]
-        else:
-            # Fallback to normal
-            self.start_index = self.np_random.integers(
-                low=self.min_start_index, 
-                high=self.max_start_index + 1
-            )
-        
-        self.current_index = self.start_index
+        self.current_episode_start = self.np_random.integers(self.min_start_index, self.max_start_index + 1)
+        self.current_step = 0
         self.episode_done = False
         
-        self.total_cash = self.initial_capital
-        self.long_cash = self.total_cash / 2
-        self.short_cash = self.total_cash / 2
+        initial_price_for_reset = self.prices[self.current_episode_start]
         
-        self.long_shares = 0
-        self.short_shares = 0
+        self.current_long_shares = self.initial_long_capital / initial_price_for_reset if initial_price_for_reset > 0 else 0.0
+        self.current_short_shares = 0.0 
+        self.cash = self.initial_short_capital 
         
-        self.refresh_portfolio()
+        self.current_portfolio_value = self._calculate_portfolio_value(initial_price_for_reset)
         
-        self.historical_portfolio = []
-        self.historical_long_shares = []
-        self.historical_short_shares = []
-        self.historical_cash = []
-        self.historical_actions = []
+        self.last_action = np.array([1.0, 0.0], dtype=np.float32) 
+        
+        self.historical_portfolio = [self.current_portfolio_value]
+        self.historical_long_shares = [self.current_long_shares]
+        self.historical_short_shares = [self.current_short_shares]
+        self.historical_cash = [self.cash]
+        self.historical_actions = [self.last_action.copy()]
+        self.historical_prices = [initial_price_for_reset]
         self.historical_returns = []
         
-        # Start with 100% long, no hedging
-        self.trade(action=1.0)
-        self.update_historical(action=1.0, returnp=0.00)
-        
-        return self._get_observation(), self._get_info()
-        
-    
-    def trade(self, action: float):
-        
-        # Get current price based on the current index
-        current_price = self.prices[self.current_index]
-        
-        # Get the cost of share
-        cost_per_share = current_price * (1 + self.commission)
-            
-        # Refresh values
-        self.refresh_portfolio()
-
-        if action >= 1:
-            
-            # Open all long positions:
-            shares_to_buy = int(self.long_cash / cost_per_share)
-            position_to_buy = shares_to_buy * cost_per_share
-            
-            self.long_cash -= position_to_buy
-            self.long_shares += shares_to_buy
-            
-            # Open <action>% of short 
-            
-            if action != 1:
-                 
-                # Check if we need to sell in short more or buy to cover some
-                shares_to_hold = int((self.short_portfolio_value * action) / current_price)
-                if self.short_shares > shares_to_hold:
-                    
-                    # Buy to cover some
-                    shares_to_buy_to_cover = self.short_shares - shares_to_hold
-                    position_to_buy_to_cover = shares_to_buy_to_cover * cost_per_share
-                    
-                    # Check if I have enough cash to deduct commissions
-                    if position_to_buy_to_cover > self.short_cash:
-                        missing_shares = np.ceil((position_to_buy_to_cover - self.short_cash) / cost_per_share) # Number of shares that we don't have money for
-                        shares_to_buy_to_cover -= missing_shares
-                        position_to_buy_to_cover = shares_to_buy_to_cover * cost_per_share
-                        
-                    self.short_cash -= position_to_buy_to_cover
-                    self.short_shares -= shares_to_buy_to_cover
-                
-                elif self.short_shares < shares_to_hold:
-                    
-                    # Sell in short more
-                    shares_to_short = shares_to_hold - self.short_shares
-                    position_to_short = shares_to_short * current_price
-                    
-                    self.short_cash += position_to_short * (1 - self.commission)
-                    self.short_shares += shares_to_short
-                
-            
-        else:
-            
-            # Close all short positions
-            shares_to_buy_to_cover = self.short_shares
-            position_to_buy_to_cover = shares_to_buy_to_cover * cost_per_share
-            
-            self.short_cash -= position_to_buy_to_cover
-            self.short_shares = 0
-            
-            # Open <action>% of long positions
-            
-            # Check if we need to buy more or sell some
-            shares_to_hold = int((self.long_portfolio_value * action) / current_price)
-            if self.long_shares > shares_to_hold:
-                
-                # Sell some
-                shares_to_sell = self.long_shares - shares_to_hold
-                position_to_sell = shares_to_sell * current_price
-                
-                self.long_cash += position_to_sell * (1 - self.commission)
-                self.long_shares -= shares_to_sell
-                
-            elif self.long_shares < shares_to_hold:
-                # Buy more
-                shares_to_buy = shares_to_hold - self.long_shares
-                position_to_buy = shares_to_buy * cost_per_share
-                
-                # Check if I have enough cash to deduct commissions
-                if position_to_buy > self.long_cash:
-                    missing_shares = np.ceil((position_to_buy - self.long_cash) / cost_per_share) # Number of shares that we don't have money for
-                    shares_to_buy -= missing_shares
-                    position_to_buy = shares_to_buy * cost_per_share
-                
-                self.long_cash -= position_to_buy
-                self.long_shares += shares_to_buy
-                 
-        self.refresh_portfolio(price = current_price)
-        
-        
-            
-    def update_historical(self, action: float, returnp: float):
-        
-        self.historical_portfolio.append(self.total_portfolio_value)
-        self.historical_long_shares.append(self.long_shares)
-        self.historical_short_shares.append(self.short_shares)
-        self.historical_cash.append(self.total_cash)
-        self.historical_actions.append(action)
-        self.historical_returns.append(returnp)
-        
-            
-    def refresh_portfolio(self, price: float | None = None):
-        """
-        Refresh portfolio values based on current shares and cash.
-        """
-        if price is None:
-            price = self.prices[self.current_index]
-        
-        self.long_position = self.long_shares * price
-        self.short_position =  self.short_shares * price
-        
-        self.long_portfolio_value = self.long_cash + self.long_position
-        self.short_portfolio_value = self.short_cash - self.short_position
-        self.total_portfolio_value = self.long_portfolio_value + self.short_portfolio_value
-            
-            
+        return self._get_observation(), self._get_info()    
             
     
     def step(
@@ -243,165 +118,188 @@ class PortfolioHedgingEnv(gym.Env):
         if self.episode_done:
             raise RuntimeError("Episode is done. Please reset the environment.")
         
-        # Clip the action to fit the space box
-        action = np.clip(action[0], self.action_space.low[0], self.action_space.high[0])
+        target_long_ratio = np.clip(action[0], self.action_space.low[0], self.action_space.high[0])
+        target_short_ratio = np.clip(action[1], self.action_space.low[1], self.action_space.high[1])
         
-        # Get the difference with respect to the previous action
-        diff_action = abs(action - self.historical_actions[-1])
+        current_idx = self.current_episode_start + self.current_step
+        current_price = self.prices[current_idx]
+        prev_portfolio_value = self.current_portfolio_value
         
-        # Trade only if the difference is higher than the dead zone
-        if diff_action > self.dead_zone:
-            self.trade(action)
+        if current_price <= 0: 
+            self.current_portfolio_value = 0.0
+            self.episode_done = True
+            return self._get_observation(), -1000.0, True, False, self._get_info() 
         
-        # Take a step
-        self.current_index += 1
-        self.episode_done = self.current_index >= (self.start_index + self.episode_days)
+        target_long_capital_value = self.initial_long_capital * target_long_ratio
+        target_short_capital_value = self.initial_short_capital * target_short_ratio
         
-        # Get the return in the portfolio value
-        self.refresh_portfolio()
-        step_return = (self.total_portfolio_value - self.historical_portfolio[-1]) / self.historical_portfolio[-1]
+        target_long_shares = target_long_capital_value / current_price 
+        target_short_shares = target_short_capital_value / current_price 
         
-        # Update historical data
-        self.update_historical(action, step_return)
+        delta_long_shares = target_long_shares - self.current_long_shares
+        delta_short_shares = target_short_shares - self.current_short_shares
         
+        total_desired_trade_value = abs(delta_long_shares * current_price) + abs(delta_short_shares * current_price)
+        
+        is_significant_action_change_long = abs(target_long_ratio - self.last_action[0]) > self.dead_zone
+        is_significant_action_change_short = abs(target_short_ratio - self.last_action[1]) > self.dead_zone
+        is_significant_trade_value = total_desired_trade_value > (self.dead_zone * self.current_portfolio_value)
+        
+        max_trade_capital_per_side = self.current_portfolio_value * self.max_shares_per_trade
+        max_trade_shares_long = max_trade_capital_per_side / current_price
+        max_trade_shares_short = max_trade_capital_per_side / current_price
+        
+        if is_significant_action_change_long or is_significant_action_change_short or is_significant_trade_value:
             
-        reward = self._calculate_reward(step_return, action, diff_action)
-        obs = self._get_observation()
+            if delta_long_shares > 0:
+                shares_to_buy = min(delta_long_shares, max_trade_shares_long)
+                cost = shares_to_buy * current_price * (1 + self.commission)
+
+                if self.cash >= cost:
+                    self.current_long_shares += shares_to_buy
+                    self.cash -= cost
+
+                elif self.current_portfolio_value > 0: 
+                    affordable_shares = self.cash / (current_price * (1 + self.commission)) if current_price > 0 else 0
+                    self.current_long_shares += affordable_shares
+                    self.cash -= affordable_shares * current_price * (1 + self.commission)
+
+            elif delta_long_shares < 0: 
+                shares_to_sell = min(abs(delta_long_shares), self.current_long_shares, max_trade_shares_long)
+                revenue = shares_to_sell * current_price * (1 - self.commission)
+                self.current_long_shares -= shares_to_sell
+                self.cash += revenue
+            
+            if delta_short_shares > 0:
+                shares_to_short = min(delta_short_shares, max_trade_shares_short)
+                revenue_from_short = shares_to_short * current_price * (1 - self.commission)
+                self.current_short_shares += shares_to_short
+                self.cash += revenue_from_short
+
+            elif delta_short_shares < 0:
+                shares_to_cover = min(abs(delta_short_shares), self.current_short_shares, max_trade_shares_short)
+                cost_to_cover = shares_to_cover * current_price * (1 + self.commission)
+
+                if self.cash >= cost_to_cover:
+                    self.current_short_shares -= shares_to_cover
+                    self.cash -= cost_to_cover
+
+                elif self.current_portfolio_value > 0: 
+                    affordable_shares = self.cash / (current_price * (1 + self.commission)) if current_price > 0 else 0
+                    actual_shares_to_cover = min(shares_to_cover, self.current_short_shares, affordable_shares)
+                    self.current_short_shares -= actual_shares_to_cover
+                    self.cash -= actual_shares_to_cover * current_price * (1 + self.commission)
+                    
+        self.current_long_shares = max(0.0, self.current_long_shares)
+        self.current_short_shares = max(0.0, self.current_short_shares)
+        
+        self.current_step += 1
+
+        self.episode_done = (self.current_step >= self.episode_days or 
+                             (current_idx + 1) >= len(self.prices))
+        
+        self.current_portfolio_value = self._calculate_portfolio_value(current_price)
+        
+        reward = 0.0
+        step_return = 0.0
+        
+        if self.current_portfolio_value <= 0:
+            reward = -200.0 
+            self.episode_done = True
+        else:
+            step_return = (self.current_portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value != 0 else 0.0 
+            reward = self._calculate_reward(step_return, action)
+            
+            
+        
+        self.historical_portfolio.append(self.current_portfolio_value)
+        self.historical_long_shares.append(self.current_long_shares)
+        self.historical_short_shares.append(self.current_short_shares)
+        self.historical_cash.append(self.cash)
+        self.historical_actions.append(action.copy())
+        self.historical_returns.append(step_return)
+        self.historical_prices.append(current_price)
+            
+        self.last_action = action.copy()
+        
+        obs = self._get_observation() 
         info = self._get_info()
         
         return obs, reward, self.episode_done, False, info
     
     
-    def _calculate_reward(self, step_return, action, diff_action):
+    def _calculate_reward(self, step_return, current_action_array):
         
-        # Base return
-        base_reward = step_return * 10.0
+        reward = step_return * 200.0
         
-        # Benchmark comparison
-        benchmark_return = (self.prices[self.current_index] - self.prices[self.current_index-1]) / self.prices[self.current_index-1]
-        outperformance_bonus = (step_return - benchmark_return) * 15.0
+        if step_return > 0:
+            reward += step_return * 500.0
+            
+        action_diff = np.linalg.norm(current_action_array - self.last_action) 
         
-        # Market regime awareness
-        lookback = min(20, self.current_index)  # 20-day rolling window
-        if lookback > 1:
-            recent_prices = self.prices[self.current_index-lookback:self.current_index+1]
-            returns = np.diff(recent_prices) / recent_prices[:-1]
-            market_volatility = np.std(returns) * np.sqrt(252)  # Annualized volatility
-        else:
-            market_volatility = 0.15  # Default to low volatility
+        if action_diff > self.action_change_penalty_threshold:
+            penalty = (action_diff - self.action_change_penalty_threshold) * 10.0 
+            reward -= penalty
         
-        if market_volatility > 0.25:  # High volatility market
-            # Reward hedging in volatile markets
-            hedging_bonus = (2.0 - action) * 0.3 if action > 1.0 else 0
-        else:  # Low volatility market  
-            # Penalize over-hedging in calm markets
-            hedging_penalty = -abs(action - 1.0) * 0.5
-            hedging_bonus = hedging_penalty
-        
-        # Position change penalty (prevent overtrading)
-        position_change = abs(diff_action)
-        if position_change > self.dead_zone:
-            trading_penalty = -position_change * 0.2
-        else:
-            trading_penalty = 0
-        
-        return base_reward + outperformance_bonus + hedging_bonus + trading_penalty
+        if len(self.historical_portfolio) > 1:
+            drawdown = self._calculate_max_drawdown(np.array(self.historical_portfolio))
+            if drawdown > 0.10:
+                reward -= (drawdown - 0.10) * 20.0
     
+        return max(min(reward, 100.0), -100.0)
     
     def _get_observation(self):
-        start_index = self.current_index - self.window_size + 1
-        end_index = self.current_index
-        
-        # Get features window and flatten it
-        features_window = self.features[start_index:end_index + 1]
-        flattened_features = features_window.flatten()
-        
-        # Get current stats (5 values: portfolio, long_shares, short_shares, cash, last_action)
-        current_stats = np.array([
-            self.total_portfolio_value / self.initial_capital,  # Normalize by initial capital
-            self.long_shares / 1000.0,  # Normalize shares
-            self.short_shares / 1000.0,  # Normalize shares
-            self.total_cash / self.initial_capital,  # Normalize cash
-            self.historical_actions[-1] if self.historical_actions else 1.0
-        ], dtype=np.float32)
-        
-        
-        # Extract current market indicators from existing features
-        current_features = self.features[self.current_index]
-        
-        market_context = []
-        
-        # VIX percentile
-        vix_indicator = current_features[self._vix_relative_idx]
-        market_context.append(vix_indicator)
-        
-        # Performance vs benchmark 
-        performance_vs_benchmark = 0.0
-        performance_vs_benchmark = current_features[self._relative_performance_idx]
-        market_context.append(performance_vs_benchmark)
-        
-        # Volatility regime (using volatility features)
-        volatility_regime = 0.0
-        current_vol = current_features[self._volatility_20_idx]
-        # Calculate historical volatility percentile
-        lookback_vol = min(252, self.current_index - self.start_index)  # 1 year max
-        if lookback_vol > 20:
-            historical_vols = self.features[self.current_index-lookback_vol:self.current_index, self._volatility_20_idx]
-            vol_percentile = (current_vol - np.mean(historical_vols)) / (np.std(historical_vols) + 1e-8)
-            volatility_regime = np.tanh(vol_percentile)
+        current_idx = self.current_episode_start + self.current_step
+
+        feature_window_start_idx = current_idx - self.window_size + 1
+        feature_window_end_idx = current_idx + 1
+
+        if feature_window_start_idx < 0: 
+            padding_needed = abs(feature_window_start_idx)
+            market_features = np.zeros((self.window_size, self.features.shape[1]), dtype=np.float32)
+            market_features[padding_needed:] = self.features[0:feature_window_end_idx]
         else:
-            volatility_regime = current_vol
-        market_context.append(volatility_regime)
+            market_features = self.features[feature_window_start_idx:feature_window_end_idx]
+
+        if market_features.shape[0] > 0 and market_features.std(axis=0).sum() > 1e-8:
+            market_features = (market_features - market_features.mean(axis=0)) / (market_features.std(axis=0) + 1e-8)
+        else:
+            market_features = np.zeros_like(market_features)
+
+        market_features = market_features.flatten()
+
+        portfolio_value_for_norm = max(self.current_portfolio_value, 1e-6) 
+
+        portfolio_state = np.array([
+            (self.current_long_shares * self.prices[current_idx]) / portfolio_value_for_norm, 
+            (self.current_short_shares * self.prices[current_idx]) / portfolio_value_for_norm, 
+            self.cash / portfolio_value_for_norm, 
+            self.current_portfolio_value / self.initial_capital 
+        ], dtype=np.float32)
+
+        return np.concatenate((market_features, portfolio_state))
+    
+    def _calculate_portfolio_value(self, current_price):
+        long_value = self.current_long_shares * current_price
+        short_value_debt = self.current_short_shares * current_price 
+        return self.cash + long_value - short_value_debt
         
-        # Recent momentum (20-day)
-        momentum_20d = 0.0
-        if self.current_index >= 20:
-            price_20d_ago = self.prices[self.current_index - 20]
-            current_price = self.prices[self.current_index]
-            momentum_20d = np.tanh((current_price - price_20d_ago) / price_20d_ago)
-        market_context.append(momentum_20d)
-        
-        # Portfolio momentum vs market
-        portfolio_momentum = 0.0
-        if len(self.historical_portfolio) > 20:
-            portfolio_20d_ago = self.historical_portfolio[-20]
-            current_portfolio = self.historical_portfolio[-1]
-            portfolio_return = (current_portfolio - portfolio_20d_ago) / portfolio_20d_ago
-            market_return = momentum_20d  # Reuse market momentum
-            portfolio_momentum = np.tanh(portfolio_return - market_return)
-        market_context.append(portfolio_momentum)
-        
-        # Risk-adjusted performance 
-        risk_adjusted = 0.0
-        if len(self.historical_returns) > 10:
-            recent_returns = np.array(self.historical_returns[-10:])
-            mean_return = np.mean(recent_returns)
-            std_return = np.std(recent_returns) + 1e-8
-            risk_adjusted = np.tanh(mean_return / std_return)
-        market_context.append(risk_adjusted)
-        
-        # Convert to numpy array and ensure it's the right size
-        market_context = np.array(market_context, dtype=np.float32)
-        
-        # Concatenate all observations: flattened_features + current_stats + market_context
-        obs = np.concatenate([flattened_features, current_stats, market_context])
-        
-        return obs.astype(np.float32)
     
     def _get_info(self) -> dict:
-        index = self.current_index
-        if index >= len(self.prices):
-            index = len(self.prices) - 1
-            
+        current_idx = self.current_episode_start + self.current_step
+        date_idx = min(current_idx, len(self.dates) - 1)
+        date = self.dates[date_idx]
+
+        current_price_for_info = self.prices[min(current_idx, len(self.prices) - 1)]
+
         return {
-            "current_index": index,
-            "current_price": self.prices[index],
-            "portfolio_value": self.total_portfolio_value,
-            "cash": self.total_cash,
-            "long_shares": self.long_shares,
-            "short_shares": self.short_shares,
-            "episode_step": self.current_index - self.start_index,
-            "episode_length_days": self.episode_days
+            'current_price': current_price_for_info,
+            'current_long_shares': self.current_long_shares,
+            'current_short_shares': self.current_short_shares,
+            'cash': self.cash,
+            'portfolio_value': self.current_portfolio_value,
+            'total_return_episode_so_far': (self.current_portfolio_value - self.initial_capital) / self.initial_capital if self.initial_capital > 0 else 0.0,
+            'date': date
         }
         
     
@@ -420,11 +318,11 @@ class PortfolioHedgingEnv(gym.Env):
         periods_per_year = 12 / self.episode_months
         annualized_return = (1 + total_return ) ** periods_per_year - 1
         
-        benchmark_return = (self.prices[self.current_index] - self.prices[self.start_index]) / self.prices[self.start_index]
+        benchmark_return = (self.historical_prices[-1] - self.historical_prices[0]) / self.historical_prices[0]
         annualized_benchmark_return = (1 + benchmark_return ) ** periods_per_year - 1
         
         # Benchmark calculations
-        benchmark_prices = self.prices[self.start_index:self.current_index+1]
+        benchmark_prices = self.historical_prices
         benchmark_returns = np.diff(benchmark_prices) / benchmark_prices[:-1]  # Daily returns
         benchmark_volatility = benchmark_returns.std() if len(benchmark_returns) > 1 else 0.0
         benchmark_sharpe_ratio = (benchmark_returns.mean() - daily_risk_free_rate) / benchmark_volatility if benchmark_volatility > 0 else 0.0
@@ -474,101 +372,42 @@ class PortfolioHedgingEnv(gym.Env):
             "max_drawdown": max_drawdown, 
             "sortino_ratio": sortino_ratio,
             "final_portfolio_value": self.historical_portfolio[-1],
-            "final_cash": self.total_cash,
-            "final_long_shares": self.long_shares,
-            "final_short_shares": self.short_shares,
+            "final_cash": self.cash,
+            "final_long_shares": self.current_long_shares,
+            "final_short_shares": self.current_short_shares,
             "avg_action": actions.mean(),
             "min_action": actions.min(),
             "max_action": actions.max(),
             "action_std": actions.std()
         }
+    
+    
+    def _calculate_max_drawdown(self, values):
+        if not values.size or len(values) < 2: 
+            return 0.0
         
-    def _setup_feature_indices(self, feature_columns: list | None = None):
-        """Setup indices for specific features if column names are provided"""
-        if feature_columns:
-            try:
-                self._vix_relative_idx = feature_columns.index('VIX_relative') if 'VIX_relative' in feature_columns else 79
-                self._relative_performance_idx = feature_columns.index('relative_performance') if 'relative_performance' in feature_columns else 81
-                self._volatility_20_idx = feature_columns.index('volatility_20_normalized') if 'volatility_20_normalized' in feature_columns else 73
-            except:
-                # If no column names provided, use defaults
-                self._vix_relative_idx = 79
-                self._relative_performance_idx = 81
-                self._volatility_20_idx = 73
-        else:
-            self._vix_relative_idx = 79
-            self._relative_performance_idx = 81
-            self._volatility_20_idx = 73
-
+        peak_values = np.maximum.accumulate(values)
+        drawdowns = (peak_values - values) / (peak_values + 1e-6) 
+        return np.max(drawdowns)
+    
 
     def render(self) -> None:
         if self.render_mode == "human":
-            index = self.current_index
-            if index >= len(self.prices):
-                index = len(self.prices) - 1
-                
-            current_price = self.prices[index]
-            long_portfolio_value = self.long_shares * current_price + self.long_cash
-            short_portfolio_value = -(self.short_shares * current_price) + self.short_cash   
-            portfolio_value =  long_portfolio_value + short_portfolio_value
-            
-            print(f"Current index: {index}, "
-                  f"Step: {self.current_index - self.start_index}/{self.episode_days}, "
-                  f"Price: ${current_price:,.2f}, "
-                  f"Portfolio: ${portfolio_value:,.2f}, "
-                  f"Cash: ${self.total_cash:,.2f}, "
-                  f"Long Shares: {self.long_shares:,.2f}, "
-                  f"Short Shares: {self.short_shares:,.2f}")
+            current_value = self.historical_portfolio[-1] if self.historical_portfolio else self.initial_capital
+            stats = self.get_episode_stats()
+            print(f"Step: {self.current_step}")
+            print(f"Portfolio Value: ${current_value:,.2f}")
+            print(f"Long Shares: {self.current_long_shares:.2f}, Short Shares: {self.current_short_shares:.2f}")
+            print(f"Cash: ${self.cash:,.2f}")
+            print(f"Last Action: Long Ratio={self.last_action[0]:.2f}, Short Ratio={self.last_action[1]:.2f}") # Mostrar ambas
+            if stats:
+                print(f"Total Return: {stats['total_return']:.4f}")
+                print(f"Volatility: {stats['volatility']:.4f}")
+                print(f"Sharpe Ratio: {stats['sharpe_ratio']:.4f}")
+                print(f"Max Drawdown: {stats['max_drawdown']:.4f}")
+            print("-" * 30)
             
             
-    def _prepare_curriculum_episodes(self):
-        """Prepare valid episode indices based on curriculum stage."""
-        if self.curriculum_stage == "random":
-            # Use all available episodes
-            self.curriculum_episodes = list(range(self.min_start_index, self.max_start_index + 1))
-            return
-        
-        # Analyze each potential 6-month period to classify market regime
-        episode_length = self.episode_days
-        valid_episodes = []
-        
-        for start_idx in range(self.min_start_index, self.max_start_index + 1):
-            end_idx = min(start_idx + episode_length, len(self.prices) - 1)
-            
-            # Calculate period return
-            start_price = self.prices[start_idx]
-            end_price = self.prices[end_idx]
-            period_return = (end_price - start_price) / start_price
-            
-            # Calculate volatility during period
-            period_prices = self.prices[start_idx:end_idx+1]
-            period_returns = np.diff(period_prices) / period_prices[:-1]
-            volatility = np.std(period_returns) * np.sqrt(252)  # Annualized
-            
-            # Classify market regime
-            is_bull = period_return > 0.15 and volatility < 0.4  # Strong positive return, low volatility
-            is_bear = period_return < -0.10  # Negative return
-            is_mixed = not is_bull and not is_bear  # Everything else
-            
-            # Add to curriculum episodes based on stage
-            if (self.curriculum_stage == "bull" and is_bull) or \
-               (self.curriculum_stage == "bear" and is_bear) or \
-               (self.curriculum_stage == "mixed" and is_mixed):
-                valid_episodes.append(start_idx)
-        
-        self.curriculum_episodes = valid_episodes
-        
-        # Fallback to random if no episodes found for the stage
-        if not self.curriculum_episodes:
-            print(f"Warning: No episodes found for {self.curriculum_stage} stage, using random sampling")
-            self.curriculum_episodes = list(range(self.min_start_index, self.max_start_index + 1))
-    
-    
-    def set_curriculum_stage(self, stage: str):
-        self.curriculum_stage = stage
-        self._prepare_curriculum_episodes()
-        print(f"Curriculum stage set to '{stage}' with {len(self.curriculum_episodes)} available episodes")
-
 
     def close(self) -> None:
         if self.render_mode == "human":

@@ -28,6 +28,7 @@ def train_hedging_model(
     episode_length_months=6,
     window_size=5,
     dead_zone=0.01,
+    dead_zone=0.005,
     initial_long_capital=1_000_000,
     initial_short_capital=1_000_000,
     commission=0.00125,
@@ -208,6 +209,7 @@ def train_hedging_model(
         print(f"Training {algorithm} for {total_timesteps} timesteps...")
         print(f"Episode length: {episode_length_months} months")
         print(f"Portfolio value: ${initial_long_capital + initial_short_capital:,}")
+        print(f"Portfolio value: ${initial_long_capital + initial_short_capital:,}")
         print(f"Dead zone: ±{dead_zone*100:.1f}%")
         print(f"Action change penalty threshold: {action_change_penalty_threshold:.2f}")
     
@@ -320,6 +322,7 @@ if __name__ == "__main__":
                         help='Episode length in months')
     parser.add_argument('--evaluate', action='store_true',
                         help='Evaluate existing model instead of training')
+    parser.add_argument('--model_path', default="models/best_model/best_model",
     parser.add_argument('--model_path', default="models/best_model/best_model",
                         help='Path to model for evaluation')
     

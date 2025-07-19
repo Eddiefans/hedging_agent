@@ -140,6 +140,7 @@ class PortfolioHedgingEnv(gym.Env):
         self.price_history = [initial_price_for_reset]
         self.returns_history = []
         
+        
         return self._get_observation(), self._get_info()
 
     def step(self, action):

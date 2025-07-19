@@ -263,19 +263,47 @@ class PortfolioHedgingEnv(gym.Env):
         self.update_historical(action, step_return)
         
             
-        reward = self._calculate_reward(step_return, diff_action)
+        reward = self._calculate_reward(step_return, action, diff_action)
         obs = self._get_observation()
         info = self._get_info()
         
         return obs, reward, self.episode_done, False, info
     
     
-    def _calculate_reward(self, step_return: float, diff_action: float) -> float:
-    
-        total_return = (self.historical_portfolio[-1] - self.historical_portfolio[0]) / self.historical_portfolio[0]
-        reward = total_return * 5.0
+    def _calculate_reward(self, step_return, action, diff_action):
         
-        return reward
+        # Base return
+        base_reward = step_return * 10.0
+        
+        # Benchmark comparison
+        benchmark_return = (self.prices[self.current_index] - self.prices[self.current_index-1]) / self.prices[self.current_index-1]
+        outperformance_bonus = (step_return - benchmark_return) * 15.0
+        
+        # Market regime awareness
+        lookback = min(20, self.current_index)  # 20-day rolling window
+        if lookback > 1:
+            recent_prices = self.prices[self.current_index-lookback:self.current_index+1]
+            returns = np.diff(recent_prices) / recent_prices[:-1]
+            market_volatility = np.std(returns) * np.sqrt(252)  # Annualized volatility
+        else:
+            market_volatility = 0.15  # Default to low volatility
+        
+        if market_volatility > 0.25:  # High volatility market
+            # Reward hedging in volatile markets
+            hedging_bonus = (2.0 - action) * 0.3 if action > 1.0 else 0
+        else:  # Low volatility market  
+            # Penalize over-hedging in calm markets
+            hedging_penalty = -abs(action - 1.0) * 0.5
+            hedging_bonus = hedging_penalty
+        
+        # Position change penalty (prevent overtrading)
+        position_change = abs(diff_action)
+        if position_change > self.dead_zone:
+            trading_penalty = -position_change * 0.2
+        else:
+            trading_penalty = 0
+        
+        return base_reward + outperformance_bonus + hedging_bonus + trading_penalty
     
     
     def _get_observation(self):

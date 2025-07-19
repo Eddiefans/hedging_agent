@@ -40,9 +40,11 @@ class PortfolioHedgingEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf, 
             high=np.inf, 
-            shape=(self.window_size * self.features.shape[1] + 5,), # Flattened window + 5 stats
+            shape=(self.window_size * self.features.shape[1] + 5 + 6,), # Flattened window + 5 stats + 6 market context
             dtype=np.float32
         )
+        
+        self._setup_feature_indices()
         
         self.min_start_index = self.window_size
         self.max_start_index = len(self.prices) - self.episode_days - 1
@@ -316,15 +318,73 @@ class PortfolioHedgingEnv(gym.Env):
         
         # Get current stats (5 values: portfolio, long_shares, short_shares, cash, last_action)
         current_stats = np.array([
-            self.total_portfolio_value,
-            self.long_shares,
-            self.short_shares,
-            self.total_cash,
+            self.total_portfolio_value / self.initial_capital,  # Normalize by initial capital
+            self.long_shares / 1000.0,  # Normalize shares
+            self.short_shares / 1000.0,  # Normalize shares
+            self.total_cash / self.initial_capital,  # Normalize cash
             self.historical_actions[-1] if self.historical_actions else 1.0
         ], dtype=np.float32)
         
-        # Concatenate flattened features + stats
-        obs = np.concatenate([flattened_features, current_stats])
+        
+        # Extract current market indicators from existing features
+        current_features = self.features[self.current_index]
+        
+        market_context = []
+        
+        # VIX percentile
+        vix_indicator = current_features[self._vix_relative_idx]
+        market_context.append(vix_indicator)
+        
+        # Performance vs benchmark 
+        performance_vs_benchmark = 0.0
+        performance_vs_benchmark = current_features[self._relative_performance_idx]
+        market_context.append(performance_vs_benchmark)
+        
+        # Volatility regime (using volatility features)
+        volatility_regime = 0.0
+        current_vol = current_features[self._volatility_20_idx]
+        # Calculate historical volatility percentile
+        lookback_vol = min(252, self.current_index - self.start_index)  # 1 year max
+        if lookback_vol > 20:
+            historical_vols = self.features[self.current_index-lookback_vol:self.current_index, self._volatility_20_idx]
+            vol_percentile = (current_vol - np.mean(historical_vols)) / (np.std(historical_vols) + 1e-8)
+            volatility_regime = np.tanh(vol_percentile)
+        else:
+            volatility_regime = current_vol
+        market_context.append(volatility_regime)
+        
+        # Recent momentum (20-day)
+        momentum_20d = 0.0
+        if self.current_index >= 20:
+            price_20d_ago = self.prices[self.current_index - 20]
+            current_price = self.prices[self.current_index]
+            momentum_20d = np.tanh((current_price - price_20d_ago) / price_20d_ago)
+        market_context.append(momentum_20d)
+        
+        # Portfolio momentum vs market
+        portfolio_momentum = 0.0
+        if len(self.historical_portfolio) > 20:
+            portfolio_20d_ago = self.historical_portfolio[-20]
+            current_portfolio = self.historical_portfolio[-1]
+            portfolio_return = (current_portfolio - portfolio_20d_ago) / portfolio_20d_ago
+            market_return = momentum_20d  # Reuse market momentum
+            portfolio_momentum = np.tanh(portfolio_return - market_return)
+        market_context.append(portfolio_momentum)
+        
+        # Risk-adjusted performance 
+        risk_adjusted = 0.0
+        if len(self.historical_returns) > 10:
+            recent_returns = np.array(self.historical_returns[-10:])
+            mean_return = np.mean(recent_returns)
+            std_return = np.std(recent_returns) + 1e-8
+            risk_adjusted = np.tanh(mean_return / std_return)
+        market_context.append(risk_adjusted)
+        
+        # Convert to numpy array and ensure it's the right size
+        market_context = np.array(market_context, dtype=np.float32)
+        
+        # Concatenate all observations: flattened_features + current_stats + market_context
+        obs = np.concatenate([flattened_features, current_stats, market_context])
         
         return obs.astype(np.float32)
     
@@ -354,6 +414,7 @@ class PortfolioHedgingEnv(gym.Env):
         
         returns = np.array(self.historical_returns)
         portfolio_values = np.array(self.historical_portfolio)
+        actions = np.array(self.historical_actions)
         
         total_return = (self.historical_portfolio[-1] - self.historical_portfolio[0]) / self.historical_portfolio[0]
         periods_per_year = 12 / self.episode_months
@@ -399,6 +460,7 @@ class PortfolioHedgingEnv(gym.Env):
         
         return {
             "total_return": total_return,
+            "months": self.episode_months,
             "annualized_return": annualized_return,
             "benchmark_return": benchmark_return, 
             "annualized_benchmark_return": annualized_benchmark_return,
@@ -414,8 +476,29 @@ class PortfolioHedgingEnv(gym.Env):
             "final_portfolio_value": self.historical_portfolio[-1],
             "final_cash": self.total_cash,
             "final_long_shares": self.long_shares,
-            "final_short_shares": self.short_shares
+            "final_short_shares": self.short_shares,
+            "avg_action": actions.mean(),
+            "min_action": actions.min(),
+            "max_action": actions.max(),
+            "action_std": actions.std()
         }
+        
+    def _setup_feature_indices(self, feature_columns: list | None = None):
+        """Setup indices for specific features if column names are provided"""
+        if feature_columns:
+            try:
+                self._vix_relative_idx = feature_columns.index('VIX_relative') if 'VIX_relative' in feature_columns else 79
+                self._relative_performance_idx = feature_columns.index('relative_performance') if 'relative_performance' in feature_columns else 81
+                self._volatility_20_idx = feature_columns.index('volatility_20_normalized') if 'volatility_20_normalized' in feature_columns else 73
+            except:
+                # If no column names provided, use defaults
+                self._vix_relative_idx = 79
+                self._relative_performance_idx = 81
+                self._volatility_20_idx = 73
+        else:
+            self._vix_relative_idx = 79
+            self._relative_performance_idx = 81
+            self._volatility_20_idx = 73
 
 
     def render(self) -> None:

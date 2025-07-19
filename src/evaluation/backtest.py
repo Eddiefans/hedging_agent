@@ -65,53 +65,59 @@ def run_backtest(
         obs, info = env.reset()
         done = False
         
-        if verbose: 
-            print("\nEpisode {}".format(episode + 1))
-        
         while not done: 
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated 
+            
+        stat = env.get_episode_stats()
         
-        episodes_stats.append(env.get_episode_stats())
+        print(f"\nEpisode {episode + 1:2d}:")
+        print(f"  Strategy  | Return: {stat['total_return']*100:6.2f}% | Sharpe: {stat['sharpe_ratio']:6.3f} | Sortino: {stat['sortino_ratio']:6.3f} | MaxDD: {stat['max_drawdown']*100:5.2f}% | Vol: {stat['volatility']*100:5.2f}%")
+        print(f"  Benchmark | Return: {stat['benchmark_return']*100:6.2f}% | Sharpe: {stat['benchmark_sharpe_ratio']:6.3f} | Sortino: {stat['benchmark_sortino_ratio']:6.3f} | MaxDD: {stat['benchmark_max_drawdown']*100:5.2f}% | Vol: {stat['benchmark_volatility']*100:5.2f}%")
+        print(f"  Actions   | Average: {stat["avg_action"]:6.3f} | Range: [{stat["min_action"]:.3f}, {stat["max_action"]:.3f}] | Std: {stat["action_std"]:.3f}")
+        
+        episodes_stats.append(stat)
     
     stats = pd.DataFrame(episodes_stats)
+    periods_per_year = 12 / stats['months'].iloc[-1]
+    
     
     print("\n" + "="*80)
     print("STRATEGY SUMMARY")
     print("="*80)
-    print("PERFORMANCE:")
-    print(f"  Annualized Average Return: {stats['annualized_return'].mean()*100:.2f}% ± {stats['annualized_return'].std()*100:.2f}%")
+    print("\nPERFORMANCE:")
     print(f"  Average Return: {stats['total_return'].mean()*100:.2f}% ± {stats['total_return'].std()*100:.2f}%")
+    print(f"  Annualized Average Return: {((1 + stats['total_return'].mean() ) ** periods_per_year - 1)*100:.2f}%")
     print(f"  Best Episode: {stats['total_return'].max()*100:.2f}%")
     print(f"  Worst Episode: {stats['total_return'].min()*100:.2f}%")
     print(f"  Win Rate: {(stats['total_return'] > 0).mean()*100:.1f}%")
-    print("RISK METRICS:")
+    print("\nRISK METRICS:")
     print(f"  Average Sharpe Ratio: {stats['sharpe_ratio'].mean():.3f} ± {stats['sharpe_ratio'].std():.3f}")
     print(f"  Average Sortino Ratio: {stats['sortino_ratio'].mean():.3f} ± {stats['sortino_ratio'].std():.3f}")
-    print(f"  Average Max Drawdown: {stats['max_drawdown'].mean():.3f} ± {stats['max_drawdown'].std():.3f}")
-    print(f"  Strategy Volatility: {stats['volatility'].mean()*100:.2f}%")
-    print("TRADING BEHAVIOR:")
-    # print(f"  Average Action: {stats['avg_action'].mean():.3f}")
-    # print(f"  Action Range: [{stats['min_action'].min():.3f}, {stats['max_action'].max():.3f}]")
-    # print(f"  Average Action Std: {stats['action_std'].mean():.3f}")
-    # print(f"  Average Reward: {stats['total_reward'].mean():.2f} ± {stats['total_reward'].std():.2f}")
+    print(f"  Average Max Drawdown: {stats['max_drawdown'].mean()*100:.2f}%")
+    print(f"  Average Volatility: {stats['volatility'].mean()*100:.2f}%")
+    print("\nTRADING BEHAVIOR:")
+    print(f"  Average Action: {stats['avg_action'].mean():.3f}")
+    print(f"  Action Range: [{stats['min_action'].min():.3f}, {stats['max_action'].max():.3f}]")
+    print(f"  Average Action Std: {stats['action_std'].mean():.3f}")
     
     print("\n" + "="*80)
     print("BENCHMARK SUMMARY")
     print("="*80)
-    print("PERFORMANCE:")
-    print(f"  Annualized Average Return: {stats['annualized_benchmark_return'].mean()*100:.2f}% ± {stats['annualized_benchmark_return'].std()*100:.2f}%")
+    print("\nPERFORMANCE:")
     print(f"  Average Return: {stats['benchmark_return'].mean()*100:.2f}% ± {stats['benchmark_return'].std()*100:.2f}%")
+    print(f"  Annualized Average Return: {((1 + stats['benchmark_return'].mean() ) ** periods_per_year - 1)*100:.2f}%")
     print(f"  Best Episode: {stats['benchmark_return'].max()*100:.2f}%")
     print(f"  Worst Episode: {stats['benchmark_return'].min()*100:.2f}%")
     print(f"  Win Rate: {(stats['benchmark_return'] > 0).mean()*100:.1f}%")
-    print("RISK METRICS:")
+    print("\nRISK METRICS:")
     print(f"  Average Sharpe Ratio: {stats['benchmark_sharpe_ratio'].mean():.3f} ± {stats['benchmark_sharpe_ratio'].std():.3f}")
     print(f"  Average Sortino Ratio: {stats['benchmark_sortino_ratio'].mean():.3f} ± {stats['benchmark_sortino_ratio'].std():.3f}")
-    print(f"  Average Max Drawdown: {stats['benchmark_max_drawdown'].mean():.3f} ± {stats['benchmark_max_drawdown'].std():.3f}")
-    print(f"  Benchmark Volatility: {stats['volatility'].mean()*100:.2f}%")
-    print("TRADING BEHAVIOR: Buy and Hold")
+    print(f"  Average Max Drawdown: {stats['benchmark_max_drawdown'].mean()*100:.2f}%")
+    print(f"  Average Volatility: {stats['volatility'].mean()*100:.2f}%")
+    print("\nTRADING BEHAVIOR:")
+    print("  Buy and Hold")
     
     print("\n" + "="*80)
         

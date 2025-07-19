@@ -85,6 +85,9 @@ def train_hedging_model(
         curriculum_stage="random"  # Always random
     )
     
+    train_env._setup_feature_indices(feature_columns)
+    eval_env._setup_feature_indices(feature_columns)
+    
     # Configure logging
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
     
@@ -170,20 +173,13 @@ def train_hedging_model(
     if use_curriculum:
         from src.training.curriculum_callback import CurriculumCallback
         curriculum_callback = CurriculumCallback(
-            total_timesteps=total_timesteps,  # NEW: Pass total timesteps
-            stage_proportions=[0.1, 0.1, 0.2, 0.6],  # NEW: Use proportions instead of fixed timesteps
+            total_timesteps=total_timesteps,  
+            stage_proportions=[0.01, 0.01, 0.02, 0.96],  
             stage_names=["bull", "bear", "mixed", "random"],
             verbose=verbose
         )
         callbacks.append(curriculum_callback)
         
-        if verbose:
-            print("=== CURRICULUM LEARNING ENABLED ===")
-            print("Stage 1 (10%): Bull markets only")
-            print("Stage 2 (10%): Bear markets only")  
-            print("Stage 3 (20%): Mixed/sideways markets")
-            print("Stage 4 (60%): Random sampling")
-            print("====================================")
     
     
     # Train model

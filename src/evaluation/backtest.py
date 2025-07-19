@@ -115,7 +115,7 @@ def run_backtest(
     print(f"  Average Sharpe Ratio: {stats['benchmark_sharpe_ratio'].mean():.3f} ± {stats['benchmark_sharpe_ratio'].std():.3f}")
     print(f"  Average Sortino Ratio: {stats['benchmark_sortino_ratio'].mean():.3f} ± {stats['benchmark_sortino_ratio'].std():.3f}")
     print(f"  Average Max Drawdown: {stats['benchmark_max_drawdown'].mean()*100:.2f}%")
-    print(f"  Average Volatility: {stats['volatility'].mean()*100:.2f}%")
+    print(f"  Average Volatility: {stats['benchmark_volatility'].mean()*100:.2f}%")
     print("\nTRADING BEHAVIOR:")
     print("  Buy and Hold")
     

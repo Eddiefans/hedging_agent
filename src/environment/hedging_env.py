@@ -341,6 +341,66 @@ class PortfolioHedgingEnv(gym.Env):
             'final_position_net_shares': self.current_long_shares - self.current_short_shares,
             'num_trades': num_trades
         }
+    
+    def get_episode_stats(self):
+        if len(self.portfolio_history) < 2:
+            return {
+                'total_return': 0.0,
+                'annualized_return': 0.0,  # Añadido
+                'volatility': 0.0,
+                'sharpe_ratio': 0.0,
+                'sortino_ratio': 0.0,      # Añadido
+                'max_drawdown': 0.0,
+                'final_position_net_shares': self.current_long_shares - self.current_short_shares,
+                'num_trades': 0
+            }
+            
+        returns = np.array(self.returns_history) # Asumo que self.returns_history son los retornos diarios
+        values = np.array(self.portfolio_history) # Asumo que self.portfolio_history son los valores diarios del portafolio
+        
+        total_return = (values[-1] - values[0]) / values[0] if values[0] != 0 else 0.0
+        
+        # --- Cálculo de Volatilidad (Anualizada) ---
+        volatility = returns.std() if len(returns) > 0 else 0.0
+        annualized_volatility = volatility * np.sqrt(252) # Asumo 252 días de trading al año
+        
+        # --- Cálculo de Sharpe Ratio (Anualizado) ---
+        # Asumiendo una tasa libre de riesgo de 0 para la simplicidad del ejemplo.
+        # Si tienes una, debes restarla de returns.mean()
+        sharpe_ratio = returns.mean() / volatility if volatility > 0 else 0.0
+        annualized_sharpe_ratio = sharpe_ratio * np.sqrt(252) # Anualizado
+        
+        # --- Cálculo de Max Drawdown ---
+        max_drawdown = self._calculate_max_drawdown(values) # Llama a tu método interno _calculate_max_drawdown
+        
+        # --- Cálculo de Sortino Ratio (Anualizado) ---
+        negative_returns = returns[returns < 0]
+        downside_std = negative_returns.std() if len(negative_returns) > 0 else 0.0
+        sortino_ratio = returns.mean() / downside_std if downside_std > 0 else 0.0
+        annualized_sortino_ratio = sortino_ratio * np.sqrt(252) # Anualizado
+        
+        # --- Cálculo de Retorno Anualizado ---
+        # Aquí necesitamos la duración del episodio en días para anualizar correctamente
+        # 'len(returns)' es el número de retornos, lo que implica len(returns) + 1 valores en portfolio_history
+        # y 'len(returns)' días de trading en el episodio.
+        days_in_episode = len(returns)
+        annualized_return = total_return * (252.0 / days_in_episode) if days_in_episode > 0 else 0.0
+        
+        # --- Cálculo de Número de Trades ---
+        num_trades = sum(1 for i in range(1, len(self.action_history)) 
+                        if np.linalg.norm(self.action_history[i] - self.action_history[i-1]) > 1e-6)
+
+        return {
+            'total_return': total_return,
+            'annualized_return': annualized_return,       # ¡Añadido y calculado!
+            'volatility': annualized_volatility,          # Ahora anualizada
+            'sharpe_ratio': annualized_sharpe_ratio,      # Ahora anualizada
+            'sortino_ratio': annualized_sortino_ratio,    # ¡Añadido y calculado, y anualizado!
+            'max_drawdown': max_drawdown,
+            'final_position_net_shares': self.current_long_shares - self.current_short_shares,
+            'num_trades': num_trades
+        }
+
 
     def _calculate_max_drawdown(self, values):
         if not values.size or len(values) < 2: 

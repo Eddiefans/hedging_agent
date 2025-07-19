@@ -169,10 +169,10 @@ checkpoints/*
 logs/*
 !logs/.gitkeep
 
-# Keep result directories but ignore large files
+# Keep results directory and all subdirectories/files
 !results/
-!results/*
-!results/*/*
+!results/*/
+!results/**/*
 
 # IDE specific
 .vscode/

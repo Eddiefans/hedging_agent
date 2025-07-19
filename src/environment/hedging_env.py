@@ -74,6 +74,8 @@ class PortfolioHedgingEnv(gym.Env):
         self.historical_portfolio = []
         self.historical_long_shares = []
         self.historical_short_shares = []
+        self.historical_long_positions = []
+        self.historical_short_positions = []
         self.historical_cash = []
         self.historical_prices = []
         self.historical_actions = []
@@ -103,6 +105,8 @@ class PortfolioHedgingEnv(gym.Env):
         self.historical_portfolio = [self.current_portfolio_value]
         self.historical_long_shares = [self.current_long_shares]
         self.historical_short_shares = [self.current_short_shares]
+        self.historical_long_positions = [self.initial_long_capital]
+        self.historical_short_positions = [0.0]
         self.historical_cash = [self.cash]
         self.historical_actions = [self.last_action.copy()]
         self.historical_prices = [initial_price_for_reset]
@@ -215,6 +219,8 @@ class PortfolioHedgingEnv(gym.Env):
         self.historical_portfolio.append(self.current_portfolio_value)
         self.historical_long_shares.append(self.current_long_shares)
         self.historical_short_shares.append(self.current_short_shares)
+        self.historical_long_positions.append(self.current_long_shares*current_price)
+        self.historical_short_positions.append(self.current_short_shares*current_price)
         self.historical_cash.append(self.cash)
         self.historical_actions.append(action.copy())
         self.historical_returns.append(step_return)
@@ -355,7 +361,6 @@ class PortfolioHedgingEnv(gym.Env):
         num_trades = sum(1 for i in range(1, len(self.historical_long_shares))
                          if abs(self.historical_long_shares[i] - self.historical_long_shares[i-1]) > 1e-6 or \
                             abs(self.historical_short_shares[i] - self.historical_short_shares[i-1]) > 1e-6)
-        
         return {
             "total_return": total_return,
             "months": self.episode_months,
@@ -375,11 +380,68 @@ class PortfolioHedgingEnv(gym.Env):
             "final_cash": self.cash,
             "final_long_shares": self.current_long_shares,
             "final_short_shares": self.current_short_shares,
-            "avg_action": actions.mean(),
-            "min_action": actions.min(),
-            "max_action": actions.max(),
-            "action_std": actions.std()
+            "avg_l_action": actions[:,0].mean(),
+            "min_l_action": actions[:,0].min(),
+            "max_l_action": actions[:,0].max(),
+            "action_l_std": actions[:,0].std(),
+            "avg_s_action": actions[:,1].mean(),
+            "min_s_action": actions[:,1].min(),
+            "max_s_action": actions[:,1].max(),
+            "action_s_std": actions[:,1].std()
         }
+        
+    def get_history(self):
+        
+        # Get dates for the episode period
+        episode_dates = []
+        for i in range(len(self.historical_portfolio)):
+            date_idx = self.current_episode_start + i
+            episode_dates.append(self.dates[date_idx])
+        
+        # Separate long and short acitons
+        long_actions = [action[0] for action in self.historical_actions]
+        short_actions = [action[1] for action in self.historical_actions]
+        
+        # Pad returns for same length
+        returns_padded = [0.0] + self.historical_returns
+        
+        benchmark_prices = np.array(self.historical_prices)
+        benchmark_returns = [0.0] + (np.diff(benchmark_prices) / benchmark_prices[:-1]).tolist()  # Daily returns
+        
+        benchmark_shares = self.initial_capital / self.historical_prices[0] 
+        benchmark_long_shares = [benchmark_shares for i in range(len(self.historical_prices))]
+        benchmark_short_shares = [0.0 for i in range(len(self.historical_prices))]
+        
+        benchmark_portfolio_value = np.array(benchmark_long_shares) * np.array(self.historical_prices)
+        
+       
+        
+        history_data = {
+            'date': episode_dates,
+            'price': self.historical_prices,
+            'portfolio_value': self.historical_portfolio,
+            'long_shares': self.historical_long_shares,
+            'short_shares': self.historical_short_shares,
+            "long_position": self.historical_long_positions,
+            "short_position": self.historical_short_positions,
+            'cash': self.historical_cash,
+            'long_action': long_actions,
+            'short_action': short_actions,
+            'returns': returns_padded[:len(self.historical_portfolio)],  # Ensure same length
+            "benchmark_portfolio_value": benchmark_portfolio_value,
+            "benchmark_long_shares": benchmark_long_shares,
+            "benchmark_short_shares": benchmark_short_shares,
+            'benchmark_long_position': benchmark_portfolio_value,
+            'benchmark_short_position': [0.0 for i in range(len(self.historical_prices))],
+            "benchmark_cash": [0.0 for i in range(len(self.historical_prices))],
+            "benchmark_returns": benchmark_returns[:len(self.historical_portfolio)]
+        }
+        
+        df = pd.DataFrame(history_data)
+        
+        df.set_index("date", inplace=True)
+        
+        return df
     
     
     def _calculate_max_drawdown(self, values):

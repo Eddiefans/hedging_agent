@@ -53,7 +53,7 @@ class PortfolioHedgingEnv(gym.Env):
         if self.max_start_idx < self.min_start_idx:
             raise ValueError(f"Not enough data for specified episode length ({self.episode_length} days) and window size ({self.window_size}). Total data points: {len(self.prices)}. Need at least {self.window_size + self.episode_length} data points.")
 
-        # --- MODIFICACIÓN CLAVE: Action Space de 2 dimensiones ---
+        # --- Action Space de 2 dimensiones ---
         # action[0]: Target % of initial_long_capital for long position (0.0 to 1.0)
         # action[1]: Target % of initial_short_capital for short position (0.0 to 1.0)
         self.action_space = spaces.Box(low=0.0, high=1.0, shape=(2,), dtype=np.float32)
@@ -136,7 +136,7 @@ class PortfolioHedgingEnv(gym.Env):
         
         self.last_action = np.array([1.0, 0.0], dtype=np.float32) # Estado inicial: 100% largo, 0% corto
         self.portfolio_history = [self.current_portfolio_value]
-        self.action_history = [self.last_action.copy()] # Guardar una copia para evitar referencias
+        self.action_history = [self.last_action.copy()]
         self.price_history = [initial_price_for_reset]
         self.returns_history = []
         
@@ -147,7 +147,7 @@ class PortfolioHedgingEnv(gym.Env):
         if self.episode_done:
             raise ValueError("Episode is done, call reset()")
 
-        # --- MODIFICACIÓN CLAVE: Interpretar dos acciones ---
+        # --- Interpretar dos acciones ---
         # action[0]: % objetivo de capital largo
         # action[1]: % objetivo de capital corto
         target_long_ratio = np.clip(action[0], self.action_space.low[0], self.action_space.high[0])
@@ -289,17 +289,9 @@ class PortfolioHedgingEnv(gym.Env):
             drawdown = self._calculate_max_drawdown(np.array(self.portfolio_history))
             if drawdown > 0.10:
                 reward -= (drawdown - 0.10) * 20.0
-            
-            initial_long_shares_at_start = self.initial_long_capital / self.prices[self.current_episode_start] if self.prices[self.current_episode_start] > 0 else 0
-            if self.current_long_shares > 2 * initial_long_shares_at_start and initial_long_shares_at_start > 0:
-                excess_shares = self.current_long_shares - 2 * initial_long_shares_at_start
-                reward -= excess_shares * 0.01
         
         return max(min(reward, 100.0), -100.0)
 
-    # Resto de métodos (_get_info, get_episode_stats, _calculate_max_drawdown, render, close)
-    # permanecen igual ya que no dependen directamente del cambio en el action_space,
-    # aunque la representación de 'last_action' en render/info cambiará a un array.
     def _get_info(self):
         current_idx = self.current_episode_start + self.current_step
         date_idx = min(current_idx, len(self.dates) - 1)
@@ -338,10 +330,8 @@ class PortfolioHedgingEnv(gym.Env):
         sharpe_ratio = returns.mean() / volatility if volatility > 0 else 0.0
         max_drawdown = self._calculate_max_drawdown(values)
         
-        # Contar trades basado en cambios en cualquiera de las acciones
         num_trades = sum(1 for i in range(1, len(self.action_history)) 
                            if np.linalg.norm(self.action_history[i] - self.action_history[i-1]) > 1e-6)
-
 
         return {
             'total_return': total_return,
@@ -378,103 +368,3 @@ class PortfolioHedgingEnv(gym.Env):
 
     def close(self):
         pass
-
-# Example usage for quick unit testing of the environment
-if __name__ == '__main__':
-    # Sample data
-    sample_dates = pd.to_datetime(pd.date_range(start='2023-01-01', periods=500))
-    np.random.seed(0) 
-    initial_price = 100
-    price_changes = np.random.normal(0, 0.5, 500).cumsum() 
-    sample_prices = (initial_price + price_changes).astype(np.float32)
-    sample_prices = np.maximum(sample_prices, 10.0) 
-
-    sample_features = np.random.rand(500, 3).astype(np.float32) 
-
-    # Environment parameters
-    env_params = {
-        "features": sample_features,
-        "prices": sample_prices,
-        "dates": sample_dates,
-        "episode_length_months": 6, 
-        "window_size": 5,
-        "dead_zone": 0.001, 
-        "initial_long_capital": 700_000, 
-        "initial_short_capital": 700_000, 
-        "commission": 0.005,
-        "action_change_penalty_threshold": 0.1,
-        "max_shares_per_trade": 0.20, 
-    }
-
-    print("--- Probando PortfolioHedgingEnv: Dos Acciones (Largo y Corto) ---")
-    try:
-        env = PortfolioHedgingEnv(**env_params)
-        env.render_mode = "human"
-
-        obs, info = env.reset(seed=42)
-        print("\n--- Estado Inicial (Reset) ---")
-        env.render()
-        print("Shape de la Observación Inicial:", obs.shape)
-        print("Info Inicial:", info)
-        print("Valor del Portfolio Inicial:", info['portfolio_value'])
-
-        done_internal = False 
-        total_reward = 0
-        step_count = 0
-        
-        # --- NUEVAS ACCIONES DE PRUEBA: Cada una es un array [largo_ratio, corto_ratio] ---
-        # largo_ratio: 0.0 (0% largo) a 1.0 (100% largo de initial_long_capital)
-        # corto_ratio: 0.0 (0% corto) a 1.0 (100% corto de initial_short_capital)
-        action_plan = [
-            np.array([1.0, 0.0]), # 100% largo, 0% corto (posición inicial)
-            np.array([1.0, 0.0]), # Mantiene
-            np.array([0.8, 0.0]), # 80% largo, 0% corto
-            np.array([0.8, 0.0]), 
-            np.array([1.0, 0.2]), # 100% largo, 20% corto (para cubrir)
-            np.array([1.0, 0.5]), # 100% largo, 50% corto
-            np.array([0.5, 0.1]), # 50% largo, 10% corto (reduce ambos)
-            np.array([0.0, 0.0]), # Cierra todo (solo cash)
-            np.array([0.0, 0.5]), # ¡Solo corto! Ojo: si no hay largo, esta cobertura puede no tener sentido para el RL.
-                                  # Si quieres que el agente pueda tomar posiciones cortas especulativas sin largo,
-                                  # necesitaríamos ajustar la interpretación de initial_short_capital y la recompensa.
-            np.array([1.0, 1.0]), # 100% largo, 100% corto (fully hedged si los capitales son iguales)
-        ]
-        
-        steps_per_action_phase = 5 
-
-        while not done_internal:
-            phase_idx = step_count // steps_per_action_phase
-            if phase_idx < len(action_plan):
-                action_to_take = action_plan[phase_idx]
-            else:
-                action_to_take = np.array([1.0, 0.0]) # Acción neutral por defecto
-
-            print(f"\n--- Paso {step_count + 1} ---")
-            print(f"Acción del Agente: Largo={action_to_take[0]:.2f}, Corto={action_to_take[1]:.2f}")
-            
-            obs, reward, terminated, truncated, info = env.step(action_to_take)
-            total_reward += reward
-            
-            done_internal = terminated or truncated 
-            
-            env.render() 
-            print(f"Recompensa: {reward:.4f}, Terminado: {terminated}, Truncado: {truncated}")
-            
-            step_count += 1
-            if done_internal:
-                break 
-
-        print(f"\nEpisodio finalizado después de {step_count} pasos.")
-        print(f"Recompensa Total Acumulada: {total_reward:.2f}")
-        final_stats = env.get_episode_stats()
-        print("\n=== Estadísticas Finales del Episodio ===")
-        for k, v in final_stats.items():
-            if isinstance(v, (float, np.float32)):
-                print(f"  {k}: {v:.4f}")
-            else:
-                print(f"  {k}: {v}")
-
-    except ValueError as e:
-        print(f"Error al crear/ejecutar el entorno: {e}")
-    except Exception as e:
-        print(f"Se produjo un error inesperado: {e}")

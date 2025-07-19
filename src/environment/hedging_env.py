@@ -14,7 +14,8 @@ class PortfolioHedgingEnv(gym.Env):
         dead_zone: float = 0.03, 
         commission: float = 0.00125, 
         initial_capital: float = 2_000_000.0,
-        render_mode: str | None = "human"
+        render_mode: str | None = "human",
+        curriculum_stage: str = "random"
     ):
         super().__init__()
         
@@ -59,6 +60,10 @@ class PortfolioHedgingEnv(gym.Env):
         self.long_shares = 0
         self.short_shares = 0
         
+        self.curriculum_stage = curriculum_stage
+        self.curriculum_episodes = []  
+        self._prepare_curriculum_episodes()  
+        
         self.refresh_portfolio(price = 0.0)
         
         
@@ -75,10 +80,15 @@ class PortfolioHedgingEnv(gym.Env):
     def reset(self, seed: int | None = None):
         super().reset(seed=seed)
         
-        self.start_index = self.np_random.integers(
-            low=self.min_start_index, 
-            high=self.max_start_index + 1
-        )
+        if self.curriculum_episodes:
+            episode_idx = self.np_random.choice(len(self.curriculum_episodes))
+            self.start_index = self.curriculum_episodes[episode_idx]
+        else:
+            # Fallback to normal
+            self.start_index = self.np_random.integers(
+                low=self.min_start_index, 
+                high=self.max_start_index + 1
+            )
         
         self.current_index = self.start_index
         self.episode_done = False
@@ -322,7 +332,7 @@ class PortfolioHedgingEnv(gym.Env):
         annualized_return = (1 + total_return ) ** periods_per_year - 1
         
         benchmark_return = (self.prices[self.current_index] - self.prices[self.start_index]) / self.prices[self.start_index]
-        annualized_benchmark_return = (1 + total_return ) ** periods_per_year - 1
+        annualized_benchmark_return = (1 + benchmark_return ) ** periods_per_year - 1
         
         # Benchmark calculations
         benchmark_prices = self.prices[self.start_index:self.current_index+1]
@@ -398,6 +408,55 @@ class PortfolioHedgingEnv(gym.Env):
                   f"Cash: ${self.total_cash:,.2f}, "
                   f"Long Shares: {self.long_shares:,.2f}, "
                   f"Short Shares: {self.short_shares:,.2f}")
+            
+            
+    def _prepare_curriculum_episodes(self):
+        """Prepare valid episode indices based on curriculum stage."""
+        if self.curriculum_stage == "random":
+            # Use all available episodes
+            self.curriculum_episodes = list(range(self.min_start_index, self.max_start_index + 1))
+            return
+        
+        # Analyze each potential 6-month period to classify market regime
+        episode_length = self.episode_days
+        valid_episodes = []
+        
+        for start_idx in range(self.min_start_index, self.max_start_index + 1):
+            end_idx = min(start_idx + episode_length, len(self.prices) - 1)
+            
+            # Calculate period return
+            start_price = self.prices[start_idx]
+            end_price = self.prices[end_idx]
+            period_return = (end_price - start_price) / start_price
+            
+            # Calculate volatility during period
+            period_prices = self.prices[start_idx:end_idx+1]
+            period_returns = np.diff(period_prices) / period_prices[:-1]
+            volatility = np.std(period_returns) * np.sqrt(252)  # Annualized
+            
+            # Classify market regime
+            is_bull = period_return > 0.15 and volatility < 0.4  # Strong positive return, low volatility
+            is_bear = period_return < -0.10  # Negative return
+            is_mixed = not is_bull and not is_bear  # Everything else
+            
+            # Add to curriculum episodes based on stage
+            if (self.curriculum_stage == "bull" and is_bull) or \
+               (self.curriculum_stage == "bear" and is_bear) or \
+               (self.curriculum_stage == "mixed" and is_mixed):
+                valid_episodes.append(start_idx)
+        
+        self.curriculum_episodes = valid_episodes
+        
+        # Fallback to random if no episodes found for the stage
+        if not self.curriculum_episodes:
+            print(f"Warning: No episodes found for {self.curriculum_stage} stage, using random sampling")
+            self.curriculum_episodes = list(range(self.min_start_index, self.max_start_index + 1))
+    
+    
+    def set_curriculum_stage(self, stage: str):
+        self.curriculum_stage = stage
+        self._prepare_curriculum_episodes()
+        print(f"Curriculum stage set to '{stage}' with {len(self.curriculum_episodes)} available episodes")
 
 
     def close(self) -> None:

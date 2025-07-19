@@ -21,7 +21,7 @@ def run_backtest(
     episode_months: int = 6,
     algorithm = "PPO",
     n_episodes = 10,
-    verbose = False
+    verbose = True
 ) -> None:
     
     if verbose: 
